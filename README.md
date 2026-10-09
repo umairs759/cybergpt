@@ -97,7 +97,8 @@ NVIDIA_API_KEY=your_nvidia_api_key_here
 ```
 
 ## 4. Launch Application
-```python3 app.py
+```
+python3 app.py
 ```
 Open your browser and navigate to http://127.0.0.1:5000
 
