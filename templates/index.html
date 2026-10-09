@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="CyberGPT — Defensive Cyber Intelligence & SOC Operations Simulator. TryHackMe-style labs, password hardening, and AI SOC mentorship." />
+  <title>CyberGPT — Defensive Cyber Intelligence & SOC Operations Simulator</title>
+
+  <!-- Google Fonts: Inter (UI) + JetBrains Mono (telemetry) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            canvas: '#07090E',
+            surface: '#0D111A',
+            surface2: '#111827',
+            cyberborder: '#1E293B',
+            neon: '#00F5A0',
+            cyber: '#00D2FF',
+          },
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+          },
+          boxShadow: {
+            'glow-neon': '0 0 18px rgba(0,245,160,0.35)',
+            'glow-cyber': '0 0 18px rgba(0,210,255,0.35)',
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Markdown renderer for AI mentor responses -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <!-- Custom CyberGPT design system (tab isolation, telemetry, animations) -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+
+<body class="bg-canvas text-slate-200 font-sans antialiased">
+
+  <!-- ===================== GLASSMORPHIC TOP NAV ===================== -->
+  <header class="sticky top-0 z-50 border-b border-cyberborder bg-surface/80 backdrop-blur-xl">
+    <div class="mx-auto max-w-7xl px-4 sm:px-6">
+      <!-- Row 1: brand + cluster status + tier switcher -->
+      <div class="flex h-16 items-center justify-between gap-4">
+        <!-- Brand -->
+        <div class="flex items-center gap-3">
+          <div class="logo-badge flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br from-cyber to-neon shadow-glow-cyber">
+            <i data-lucide="shield" class="h-5 w-5 text-canvas" stroke-width="2.5"></i>
+          </div>
+          <div class="leading-tight">
+            <h1 class="brand-title text-lg font-extrabold tracking-tight">CyberGPT</h1>
+            <p class="brand-subtitle font-mono text-[11px] text-slate-400">Defensive Cyber Intelligence &amp; SOC Operations Simulator</p>
+          </div>
+        </div>
+
+        <!-- Right: cluster status + tier switcher -->
+        <div class="flex items-center gap-3 sm:gap-4">
+          <!-- Live cluster status -->
+          <div class="hidden md:flex items-center gap-2 rounded-full border border-cyberborder bg-surface2 px-3 py-1.5">
+            <span class="status-dot"></span>
+            <span class="font-mono text-[11px] text-neon">Defense Cluster Operational</span>
+          </div>
+
+          <!-- Model tier switcher -->
+          <div class="flex items-center gap-1 rounded-lg border border-cyberborder bg-surface2 p-1" role="group" aria-label="Model tier">
+            <button class="tier-btn" data-tier="flash" title="Ultra-fast 2-3 lines (~3-5s)">
+              <i data-lucide="zap" class="h-3.5 w-3.5"></i><span class="hidden sm:inline">Flash</span><span class="hidden lg:inline text-[10px] opacity-70"> 2-3L</span>
+            </button>
+            <button class="tier-btn active" data-tier="balanced" title="Standard SOC 4-7 lines">
+              <i data-lucide="shield-check" class="h-3.5 w-3.5"></i><span class="hidden sm:inline">Balanced</span><span class="hidden lg:inline text-[10px] opacity-70"> 4-7L</span>
+            </button>
+            <button class="tier-btn" data-tier="pro" title="Deep architecture 13-20 lines">
+              <i data-lucide="brain" class="h-3.5 w-3.5"></i><span class="hidden sm:inline">Pro</span><span class="hidden lg:inline text-[10px] opacity-70"> 13-20L</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Row 2: centered tab navigation -->
+      <nav class="flex items-center justify-center gap-1 pb-2 overflow-x-auto" role="tablist" aria-label="Platform modules">
+        <button class="nav-tab active" data-tab="chat" role="tab" aria-selected="true">
+          <i data-lucide="message-square" class="h-4 w-4"></i><span>Chat Mentor</span>
+        </button>
+        <button class="nav-tab" data-tab="phishing" role="tab" aria-selected="false">
+          <i data-lucide="fish" class="h-4 w-4"></i><span>Phishing Lab</span>
+        </button>
+        <button class="nav-tab" data-tab="password" role="tab" aria-selected="false">
+          <i data-lucide="key-round" class="h-4 w-4"></i><span>Password Audit</span>
+        </button>
+        <button class="nav-tab" data-tab="soc" role="tab" aria-selected="false">
+          <i data-lucide="radar" class="h-4 w-4"></i><span>SOC Drills</span>
+        </button>
+        <button class="nav-tab" data-tab="cheatsheets" role="tab" aria-selected="false">
+          <i data-lucide="book-open" class="h-4 w-4"></i><span>Cheat Sheets</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- ===================== MAIN ===================== -->
+  <main class="mx-auto max-w-7xl px-4 py-6 sm:px-6">
+
+    <!-- ============ TAB 1: CHAT MENTOR ============ -->
+    <section class="tab-view active" id="tab-chat" role="tabpanel">
+      <div class="glass-panel flex flex-col gap-4">
+        <!-- Header -->
+        <div class="flex items-center justify-between gap-3 border-b border-cyberborder pb-3">
+          <div>
+            <h2 class="text-base font-bold text-slate-100">AI SOC Mentor</h2>
+            <p class="chat-meta font-mono text-[11px] text-slate-400" id="chat-meta">Awaiting query…</p>
+          </div>
+          <div class="hidden sm:flex items-center gap-1.5 rounded-md border border-cyberborder bg-surface2 px-2 py-1">
+            <i data-lucide="route" class="h-3.5 w-3.5 text-cyber"></i>
+            <span class="font-mono text-[10px] text-slate-400">NVIDIA NIM failover · 45s timeout</span>
+          </div>
+        </div>
+
+        <!-- Smart cross-reference banner -->
+        <div class="lab-ref-banner">
+          <i data-lucide="sparkles" class="h-4 w-4 shrink-0 text-neon"></i>
+          <span class="text-[12px] text-slate-300">Smart cross-referencing active — asking about
+            <strong class="text-neon">Phishing, Pass-the-Hash, Kerberoasting, SQL Injection, PowerShell, or Cloud</strong>
+            auto-links to the matching hands-on lab.</span>
+        </div>
+
+        <!-- Quick action pills -->
+        <div class="quick-pills" id="quick-pills">
+          <button class="quick-pill" data-query="Explain Kerberoasting detection">Kerberoasting</button>
+          <button class="quick-pill" data-query="How do I detect Pass-the-Hash with PsExec?">Pass-the-Hash</button>
+          <button class="quick-pill" data-query="Explain time-based blind SQL injection">Blind SQLi</button>
+          <button class="quick-pill" data-query="What is quishing QR code phishing?">Quishing</button>
+          <button class="quick-pill" data-query="How to detect obfuscated PowerShell -enc execution">PowerShell -enc</button>
+          <button class="quick-pill" data-query="AWS CloudTrail S3 bucket public exposure remediation">AWS S3 Exposure</button>
+        </div>
+
+        <!-- Terminal chat log -->
+        <div class="chat-log" id="chat-log" aria-live="polite">
+          <div class="chat-message assistant">
+            <div class="msg-avatar"><i data-lucide="bot" class="h-4 w-4"></i></div>
+            <div class="msg-body">
+              <p>Welcome to <strong>CyberGPT</strong>, your SOC copilot. Ask about phishing, Pass-the-Hash, Kerberoasting, SQL injection, PowerShell, or cloud attacks — I will cross-reference relevant hands-on labs automatically.</p>
+              <p class="dim">Select a tier above: <strong>Flash</strong> for rapid facts (2-3 lines), <strong>Balanced</strong> for mechanics + detection (4-7 lines), <strong>Pro</strong> for full executive briefings (13-20 lines).</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Input row -->
+        <form class="chat-input-row" id="chat-form" autocomplete="off">
+          <div class="relative flex-1">
+            <i data-lucide="terminal" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500"></i>
+            <input type="text" id="chat-input" placeholder="Ask the SOC mentor… (e.g. explain Kerberoasting detection)"
+                   aria-label="Message the SOC mentor"
+                   class="chat-input font-sans" autofocus />
+          </div>
+          <button type="submit" id="chat-send" class="btn-send">
+            <span class="btn-text">Send</span>
+            <i data-lucide="send-horizontal" class="btn-icon h-4 w-4"></i>
+            <span class="btn-spinner hidden" aria-hidden="true"></span>
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <!-- ============ TAB 2: PHISHING LAB ============ -->
+    <section class="tab-view" id="tab-phishing" role="tabpanel">
+      <div class="glass-panel flex flex-col gap-4">
+        <div class="flex items-center justify-between gap-3 border-b border-cyberborder pb-3">
+          <div>
+            <h2 class="text-base font-bold text-slate-100">TryHackMe-Style Phishing Lab</h2>
+            <p class="font-mono text-[11px] text-slate-400">Email triage, BEC, quishing &amp; OAuth consent abuse</p>
+          </div>
+          <div class="scenario-count font-mono text-[11px] text-neon" id="phishing-count"></div>
+        </div>
+        <div class="filter-row" id="phishing-filters" role="group" aria-label="Phishing category filters"></div>
+        <div class="scenario-grid" id="phishing-grid"></div>
+      </div>
+    </section>
+
+    <!-- ============ TAB 3: PASSWORD AUDIT ============ -->
+    <section class="tab-view" id="tab-password" role="tabpanel">
+      <div class="glass-panel flex flex-col gap-5">
+        <div class="flex items-center justify-between gap-3 border-b border-cyberborder pb-3">
+          <div>
+            <h2 class="text-base font-bold text-slate-100">Password Audit &amp; Smart Hardening</h2>
+            <p class="font-mono text-[11px] text-slate-400">Audit triggers ONLY on explicit button click — no keystroke tracking (no 429s)</p>
+          </div>
+          <i data-lucide="fingerprint" class="h-6 w-6 text-cyber"></i>
+        </div>
+
+        <div class="grid gap-6 lg:grid-cols-2">
+          <!-- Input column -->
+          <div class="flex flex-col gap-4">
+            <div>
+              <label for="password-field" class="mb-1.5 block font-mono text-[11px] uppercase tracking-wider text-slate-400">Password to Audit</label>
+              <div class="flex gap-2">
+                <div class="relative flex-1">
+                  <i data-lucide="lock" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500"></i>
+                  <input type="password" id="password-field" placeholder="e.g. ZacPaul0890" autocomplete="off"
+                         aria-label="Password to audit" class="chat-input pl-9 font-mono" />
+                </div>
+                <button type="button" id="toggle-pw-visibility" class="btn-ghost" title="Show/hide password">
+                  <i data-lucide="eye" class="h-4 w-4"></i>
+                </button>
+              </div>
+            </div>
+
+            <!-- Instant entropy preview -->
+            <div class="entropy-preview">
+              <div class="entropy-row">
+                <span>Instant Shannon Entropy (client-side):</span>
+                <strong id="entropy-live" class="text-cyber">0.00 bits</strong>
+              </div>
+              <div class="entropy-meter" aria-hidden="true"><div class="entropy-fill" id="entropy-fill"></div></div>
+            </div>
+
+            <button type="button" id="audit-btn" class="btn-audit">
+              <i data-lucide="scan-search" class="h-4 w-4"></i>
+              <span>Audit Password &amp; Generate Hardened Alternative</span>
+            </button>
+            <p class="rate-note font-mono text-[10px] text-slate-500">Analysis runs on click only — immune to input-event rate limits. Client-side Shannon entropy is computed instantly; the backend then returns the full hardened analysis.</p>
+          </div>
+
+          <!-- Result column -->
+          <div class="password-result" id="password-result" aria-live="polite">
+            <div class="result-placeholder">
+              <i data-lucide="info" class="h-5 w-5 text-cyber"></i>
+              <p>Enter a password and click <strong>Audit</strong> to see original vs. hardened entropy, RockYou corpus checks, offline crack-time estimates, and Argon2id/bcrypt storage guidance.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ TAB 4: SOC DRILLS ============ -->
+    <section class="tab-view" id="tab-soc" role="tabpanel">
+      <div class="glass-panel flex flex-col gap-4">
+        <div class="flex items-center justify-between gap-3 border-b border-cyberborder pb-3">
+          <div>
+            <h2 class="text-base font-bold text-slate-100">TryHackMe-Style SOC Incident Drills</h2>
+            <p class="font-mono text-[11px] text-slate-400">Endpoint, AD, lateral movement, web AppSec &amp; cloud telemetry</p>
+          </div>
+          <div class="scenario-count font-mono text-[11px] text-neon" id="soc-count"></div>
+        </div>
+        <div class="filter-row" id="soc-filters" role="group" aria-label="SOC drill category filters"></div>
+        <div class="scenario-grid" id="soc-grid"></div>
+      </div>
+    </section>
+
+    <!-- ============ TAB 5: CHEAT SHEETS ============ -->
+    <section class="tab-view" id="tab-cheatsheets" role="tabpanel">
+      <div class="glass-panel flex flex-col gap-4">
+        <div class="flex items-center justify-between gap-3 border-b border-cyberborder pb-3">
+          <div>
+            <h2 class="text-base font-bold text-slate-100">Multi-Tier Security Reference Matrices</h2>
+            <p class="font-mono text-[11px] text-slate-400">Select a tier to load its reference matrix</p>
+          </div>
+          <i data-lucide="table" class="h-6 w-6 text-cyber"></i>
+        </div>
+        <div class="tier-switcher-row" id="cheat-tiers" role="group" aria-label="Cheat sheet tier">
+          <button class="tier-btn active" data-cheat-tier="beginner"><i data-lucide="sprout" class="h-3.5 w-3.5"></i><span>Beginner</span></button>
+          <button class="tier-btn" data-cheat-tier="intermediate"><i data-lucide="shield-check" class="h-3.5 w-3.5"></i><span>Intermediate</span></button>
+          <button class="tier-btn" data-cheat-tier="advanced"><i data-lucide="brain" class="h-3.5 w-3.5"></i><span>Advanced</span></button>
+        </div>
+        <div id="cheat-container" class="cheat-container" aria-live="polite"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===================== FOOTER ===================== -->
+  <footer class="border-t border-cyberborder bg-surface/60">
+    <div class="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2 px-4 py-4 sm:px-6">
+      <span class="font-mono text-[11px] text-slate-500">CyberGPT v2.0 — Defensive Cyber Intelligence &amp; SOC Operations Simulator</span>
+      <span class="font-mono text-[10px] text-slate-600">Deep SOC Mode · JetBrains Mono telemetry · NIST SP 800-61r2 / SANS PICERL · Argon2id m=64MB/t=3/p=4</span>
+    </div>
+    <div class="text-center py-2 border-t border-cyberborder bg-surface/40">
+      <span class="font-mono text-[11px] text-slate-400">All scenarios are fictional and for educational use only.</span>
+    </div>
+  </footer>
+
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
