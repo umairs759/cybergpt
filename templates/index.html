@@ -2,11 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="CyberGPT — Defensive Cyber Intelligence & SOC Operations Simulator. TryHackMe-style labs, password hardening, and AI SOC mentorship." />
-  <title>CyberGPT — Defensive Cyber Intelligence & SOC Operations Simulator</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="description" content="CyberGPT — Defensive Cyber Intelligence & SOC Operations Simulator. Phishing triage labs, password hardening audits, SOC incident drills, and AI SOC mentorship." />
+  <meta name="theme-color" content="#0B0B0C" />
+  <title>CyberGPT — Defensive Cyber Intelligence &amp; SOC Operations Simulator</title>
 
-  <!-- Google Fonts: Inter (UI) + JetBrains Mono (telemetry) -->
+  <!-- Google Fonts: Inter (UI) + JetBrains Mono (telemetry & code) -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
@@ -18,20 +19,27 @@
       theme: {
         extend: {
           colors: {
-            canvas: '#07090E',
-            surface: '#0D111A',
-            surface2: '#111827',
-            cyberborder: '#1E293B',
-            neon: '#00F5A0',
-            cyber: '#00D2FF',
+            obsidian:  '#0B0B0C', // Main workspace background
+            surface:   '#101011', // Sidebar / matte surface
+            panel:     '#171717', // Elevated card surface
+            composer:  '#212124', // Composer input surface
+            edge:      '#2C2C2E', // 1px crisp border
+            ink:       '#F5F5F5', // Primary text
+            muted:     '#A1A1AA', // Secondary text
+            faint:     '#71717A', // Muted / placeholder
+            emerald:   '#00F5A0', // Telemetry accent
+            cyan:      '#38BDF8', // Telemetry accent
+            accent:    '#3B82F6', // Interactive accent
+            accent2:   '#00D2FF', // Interactive accent
           },
           fontFamily: {
             sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
           },
           boxShadow: {
-            'glow-neon': '0 0 18px rgba(0,245,160,0.35)',
-            'glow-cyber': '0 0 18px rgba(0,210,255,0.35)',
+            'focus-ring': '0 0 0 3px rgba(59,130,246,0.18)',
+            'composer':   '0 8px 32px rgba(0,0,0,0.45)',
+            'send-glow':  '0 0 16px rgba(59,130,246,0.45)',
           },
         },
       },
@@ -41,255 +49,350 @@
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
 
-  <!-- Markdown renderer for AI mentor responses -->
+  <!-- Markdown renderer for assistant responses -->
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
-  <!-- Custom CyberGPT design system (tab isolation, telemetry, animations) -->
+  <!-- CyberGPT design system -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
 </head>
 
-<body class="bg-canvas text-slate-200 font-sans antialiased">
+<body class="bg-obsidian text-ink font-sans antialiased">
 
-  <!-- ===================== GLASSMORPHIC TOP NAV ===================== -->
-  <header class="sticky top-0 z-50 border-b border-cyberborder bg-surface/80 backdrop-blur-xl">
-    <div class="mx-auto max-w-7xl px-4 sm:px-6">
-      <!-- Row 1: brand + cluster status + tier switcher -->
-      <div class="flex h-16 items-center justify-between gap-4">
-        <!-- Brand -->
-        <div class="flex items-center gap-3">
-          <div class="logo-badge flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br from-cyber to-neon shadow-glow-cyber">
-            <i data-lucide="shield" class="h-5 w-5 text-canvas" stroke-width="2.5"></i>
-          </div>
-          <div class="leading-tight">
-            <h1 class="brand-title text-lg font-extrabold tracking-tight">CyberGPT</h1>
-            <p class="brand-subtitle font-mono text-[11px] text-slate-400">Defensive Cyber Intelligence &amp; SOC Operations Simulator</p>
-          </div>
+<div class="app-shell flex h-[100dvh] overflow-hidden">
+
+  <!-- =====================================================================
+       LEFT SIDEBAR — brand, navigation, recent operations, session controls
+       ===================================================================== -->
+  <div id="sidebar-scrim" class="sidebar-scrim" aria-hidden="true"></div>
+
+  <aside id="sidebar" class="sidebar" aria-label="Workspace navigation">
+    <!-- A. Brand area -->
+    <div class="sidebar-brand">
+      <div class="brand-badge" aria-hidden="true">
+        <i data-lucide="shield" class="brand-shield"></i>
+      </div>
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-1.5">
+          <h1 class="brand-title text-[15px] font-bold tracking-tight">CyberGPT</h1>
+          <span class="brand-tag">ENTERPRISE</span>
         </div>
+        <p class="brand-sub">SOC Operations Simulator</p>
+      </div>
+      <button id="sidebar-close" class="icon-btn md:hidden" title="Close navigation" aria-label="Close navigation">
+        <i data-lucide="x" class="h-4 w-4"></i>
+      </button>
+    </div>
 
-        <!-- Right: cluster status + tier switcher -->
-        <div class="flex items-center gap-3 sm:gap-4">
-          <!-- Live cluster status -->
-          <div class="hidden md:flex items-center gap-2 rounded-full border border-cyberborder bg-surface2 px-3 py-1.5">
-            <span class="status-dot"></span>
-            <span class="font-mono text-[11px] text-neon">Defense Cluster Operational</span>
-          </div>
+    <!-- B. New chat -->
+    <div class="px-3 pt-3">
+      <button id="new-chat-btn" class="new-chat-btn" type="button">
+        <i data-lucide="plus" class="h-4 w-4"></i>
+        <span>New Chat</span>
+        <kbd class="kbd" aria-hidden="true">Ctrl K</kbd>
+      </button>
+    </div>
 
-          <!-- Model tier switcher -->
-          <div class="flex items-center gap-1 rounded-lg border border-cyberborder bg-surface2 p-1" role="group" aria-label="Model tier">
-            <button class="tier-btn" data-tier="flash" title="Ultra-fast 2-3 lines (~3-5s)">
-              <i data-lucide="zap" class="h-3.5 w-3.5"></i><span class="hidden sm:inline">Flash</span><span class="hidden lg:inline text-[10px] opacity-70"> 2-3L</span>
-            </button>
-            <button class="tier-btn active" data-tier="balanced" title="Standard SOC 4-7 lines">
-              <i data-lucide="shield-check" class="h-3.5 w-3.5"></i><span class="hidden sm:inline">Balanced</span><span class="hidden lg:inline text-[10px] opacity-70"> 4-7L</span>
-            </button>
-            <button class="tier-btn" data-tier="pro" title="Deep architecture 13-20 lines">
-              <i data-lucide="brain" class="h-3.5 w-3.5"></i><span class="hidden sm:inline">Pro</span><span class="hidden lg:inline text-[10px] opacity-70"> 13-20L</span>
-            </button>
-          </div>
+    <!-- C. Navigation modules -->
+    <nav class="sidebar-scroll" aria-label="Platform modules">
+      <p class="nav-section-label">Modules</p>
+      <ul class="nav-list" id="nav-list">
+        <li>
+          <button class="nav-tab active" data-tab="chat" role="tab" aria-selected="true">
+            <i data-lucide="message-square" class="nav-ico"></i>
+            <span class="nav-label">Chat Copilot</span>
+          </button>
+        </li>
+        <li>
+          <button class="nav-tab" data-tab="phishing" role="tab" aria-selected="false">
+            <i data-lucide="fish" class="nav-ico"></i>
+            <span class="nav-label">Phishing Triage Lab</span>
+          </button>
+        </li>
+        <li>
+          <button class="nav-tab" data-tab="password" role="tab" aria-selected="false">
+            <i data-lucide="key-round" class="nav-ico"></i>
+            <span class="nav-label">Password Hardening Audit</span>
+          </button>
+        </li>
+        <li>
+          <button class="nav-tab" data-tab="soc" role="tab" aria-selected="false">
+            <i data-lucide="radar" class="nav-ico"></i>
+            <span class="nav-label">SOC Incident Drills</span>
+          </button>
+        </li>
+        <li>
+          <button class="nav-tab" data-tab="cheatsheets" role="tab" aria-selected="false">
+            <i data-lucide="book-open" class="nav-ico"></i>
+            <span class="nav-label">Security Cheat Sheets</span>
+          </button>
+        </li>
+      </ul>
+
+      <!-- D. Recent operations & history -->
+      <div class="recent-block">
+        <div class="recent-head">
+          <p class="nav-section-label">Recent Operations</p>
+          <span id="recent-count" class="recent-count">0</span>
         </div>
+        <ul class="recent-list" id="recent-list">
+          <li class="recent-empty" id="recent-empty">No operations recorded this session.</li>
+        </ul>
+      </div>
+    </nav>
+
+    <!-- E. Bottom: session controls, cluster status, profile -->
+    <div class="sidebar-foot">
+      <button id="flush-btn" class="flush-btn" type="button">
+        <i data-lucide="trash-2" class="h-3.5 w-3.5"></i>
+        <span>Flush Session Memory</span>
+      </button>
+
+      <div class="status-pill" role="status">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span class="status-text">Defense Cluster Operational</span>
       </div>
 
-      <!-- Row 2: centered tab navigation -->
-      <nav class="flex items-center justify-center gap-1 pb-2 overflow-x-auto" role="tablist" aria-label="Platform modules">
-        <button class="nav-tab active" data-tab="chat" role="tab" aria-selected="true">
-          <i data-lucide="message-square" class="h-4 w-4"></i><span>Chat Mentor</span>
-        </button>
-        <button class="nav-tab" data-tab="phishing" role="tab" aria-selected="false">
-          <i data-lucide="fish" class="h-4 w-4"></i><span>Phishing Lab</span>
-        </button>
-        <button class="nav-tab" data-tab="password" role="tab" aria-selected="false">
-          <i data-lucide="key-round" class="h-4 w-4"></i><span>Password Audit</span>
-        </button>
-        <button class="nav-tab" data-tab="soc" role="tab" aria-selected="false">
-          <i data-lucide="radar" class="h-4 w-4"></i><span>SOC Drills</span>
-        </button>
-        <button class="nav-tab" data-tab="cheatsheets" role="tab" aria-selected="false">
-          <i data-lucide="book-open" class="h-4 w-4"></i><span>Cheat Sheets</span>
-        </button>
-      </nav>
+      <div class="profile">
+        <div class="profile-avatar" aria-hidden="true">
+          <i data-lucide="user" class="h-3.5 w-3.5"></i>
+        </div>
+        <div class="min-w-0 flex-1">
+          <p class="profile-name">SOC Analyst</p>
+          <p class="profile-role">Tier&nbsp;<span id="profile-tier">Balanced</span></p>
+        </div>
+        <span id="session-chip" class="session-chip" title="Session identifier">—</span>
+      </div>
     </div>
-  </header>
+  </aside>
 
-  <!-- ===================== MAIN ===================== -->
-  <main class="mx-auto max-w-7xl px-4 py-6 sm:px-6">
+  <!-- =====================================================================
+       MAIN COLUMN
+       ===================================================================== -->
+  <div class="flex min-w-0 flex-1 flex-col">
 
-    <!-- ============ TAB 1: CHAT MENTOR ============ -->
-    <section class="tab-view active" id="tab-chat" role="tabpanel">
-      <div class="glass-panel flex flex-col gap-4">
-        <!-- Header -->
-        <div class="flex items-center justify-between gap-3 border-b border-cyberborder pb-3">
-          <div>
-            <h2 class="text-base font-bold text-slate-100">AI SOC Mentor</h2>
-            <p class="chat-meta font-mono text-[11px] text-slate-400" id="chat-meta">Awaiting query…</p>
+    <!-- TOP HEADER (56px) -->
+    <header class="app-header">
+      <button id="sidebar-toggle" class="icon-btn" title="Toggle sidebar" aria-label="Toggle sidebar" aria-expanded="true">
+        <i data-lucide="panel-left" class="h-4 w-4"></i>
+      </button>
+
+      <nav class="breadcrumb" aria-label="Breadcrumb">
+        <span class="crumb-root">CyberGPT</span>
+        <i data-lucide="chevron-right" class="crumb-sep" aria-hidden="true"></i>
+        <span class="crumb-current" id="crumb-current">Chat Copilot</span>
+      </nav>
+
+      <div class="header-right">
+        <div id="tier-switcher" class="tier-group" role="group" aria-label="Model response tier">
+          <button class="tier-btn" data-tier="flash" title="2-3 lines · ~2-3s response">
+            <i data-lucide="zap" class="h-3 w-3"></i>
+            <span class="tier-name">Flash</span>
+            <span class="tier-note">2-3 lines</span>
+          </button>
+          <button class="tier-btn active" data-tier="balanced" title="4-7 lines · mechanics + detection rules">
+            <i data-lucide="shield-check" class="h-3 w-3"></i>
+            <span class="tier-name">Balanced</span>
+            <span class="tier-note">4-7 lines</span>
+          </button>
+          <button class="tier-btn" data-tier="pro" title="13-20 lines · deep architecture & IoCs">
+            <i data-lucide="brain" class="h-3 w-3"></i>
+            <span class="tier-name">Pro</span>
+            <span class="tier-note">13-20 lines</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- MODULE CONTENT -->
+    <main class="app-main" id="app-main">
+
+      <!-- ================= MODULE 1: CHAT COPILOT ================= -->
+      <section class="tab-view active" id="tab-chat" role="tabpanel" aria-label="Chat Copilot">
+        <div class="chat-shell">
+          <div class="chat-scroll" id="chat-scroll">
+            <div class="chat-inner">
+
+              <!-- Empty state / minimalist hero -->
+              <div class="chat-empty" id="chat-empty">
+                <h2 class="hero-title">How can I assist your defense operations today?</h2>
+                <div id="empty-composer-slot" class="empty-composer-slot"></div>
+                <div class="chip-row" id="quick-pills">
+                  <button class="quick-pill" type="button" data-query="Explain Zero Trust Architecture">Explain Zero Trust Architecture</button>
+                  <button class="quick-pill" type="button" data-query="How to detect Pass-the-Hash in Event Logs?">How to detect Pass-the-Hash in Event Logs?</button>
+                  <button class="quick-pill" type="button" data-query="Compare SPF, DKIM, and DMARC">Compare SPF, DKIM, and DMARC</button>
+                  <button class="quick-pill" type="button" data-query="Triage Time-based Blind SQL Injection">Triage Time-based Blind SQL Injection</button>
+                </div>
+              </div>
+
+              <!-- Conversation view -->
+              <div class="chat-log" id="chat-log" aria-live="polite" aria-label="Conversation"></div>
+
+            </div>
           </div>
-          <div class="hidden sm:flex items-center gap-1.5 rounded-md border border-cyberborder bg-surface2 px-2 py-1">
-            <i data-lucide="route" class="h-3.5 w-3.5 text-cyber"></i>
-            <span class="font-mono text-[10px] text-slate-400">NVIDIA NIM failover · 45s timeout</span>
-          </div>
-        </div>
 
-        <!-- Smart cross-reference banner -->
-        <div class="lab-ref-banner">
-          <i data-lucide="sparkles" class="h-4 w-4 shrink-0 text-neon"></i>
-          <span class="text-[12px] text-slate-300">Smart cross-referencing active — asking about
-            <strong class="text-neon">Phishing, Pass-the-Hash, Kerberoasting, SQL Injection, PowerShell, or Cloud</strong>
-            auto-links to the matching hands-on lab.</span>
-        </div>
-
-        <!-- Quick action pills -->
-        <div class="quick-pills" id="quick-pills">
-          <button class="quick-pill" data-query="Explain Kerberoasting detection">Kerberoasting</button>
-          <button class="quick-pill" data-query="How do I detect Pass-the-Hash with PsExec?">Pass-the-Hash</button>
-          <button class="quick-pill" data-query="Explain time-based blind SQL injection">Blind SQLi</button>
-          <button class="quick-pill" data-query="What is quishing QR code phishing?">Quishing</button>
-          <button class="quick-pill" data-query="How to detect obfuscated PowerShell -enc execution">PowerShell -enc</button>
-          <button class="quick-pill" data-query="AWS CloudTrail S3 bucket public exposure remediation">AWS S3 Exposure</button>
-        </div>
-
-        <!-- Terminal chat log -->
-        <div class="chat-log" id="chat-log" aria-live="polite">
-          <div class="chat-message assistant">
-            <div class="msg-avatar"><i data-lucide="bot" class="h-4 w-4"></i></div>
-            <div class="msg-body">
-              <p>Welcome to <strong>CyberGPT</strong>, your SOC copilot. Ask about phishing, Pass-the-Hash, Kerberoasting, SQL injection, PowerShell, or cloud attacks — I will cross-reference relevant hands-on labs automatically.</p>
-              <p class="dim">Select a tier above: <strong>Flash</strong> for rapid facts (2-3 lines), <strong>Balanced</strong> for mechanics + detection (4-7 lines), <strong>Pro</strong> for full executive briefings (13-20 lines).</p>
+          <!-- Sticky composer dock -->
+          <div class="chat-dock" id="composer-dock">
+            <div class="chat-inner">
+              <div id="dock-slot" class="dock-slot"></div>
+              <p class="dock-note" id="chat-meta">
+                <i data-lucide="cpu" class="note-ico"></i>
+                <span id="chat-meta-text">Balanced tier · NVIDIA NIM failover chain</span>
+              </p>
             </div>
           </div>
         </div>
+      </section>
 
-        <!-- Input row -->
-        <form class="chat-input-row" id="chat-form" autocomplete="off">
-          <div class="relative flex-1">
-            <i data-lucide="terminal" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500"></i>
-            <input type="text" id="chat-input" placeholder="Ask the SOC mentor… (e.g. explain Kerberoasting detection)"
-                   aria-label="Message the SOC mentor"
-                   class="chat-input font-sans" autofocus />
+      <!-- ================= MODULE 2: PHISHING TRIAGE LAB ================= -->
+      <section class="tab-view" id="tab-phishing" role="tabpanel" aria-label="Phishing Triage Lab">
+        <div class="lab-head">
+          <div class="min-w-0">
+            <h2 class="module-title">Phishing Triage Lab</h2>
+            <p class="module-sub">Header forensics, BEC, quishing &amp; OAuth consent abuse</p>
           </div>
-          <button type="submit" id="chat-send" class="btn-send">
-            <span class="btn-text">Send</span>
-            <i data-lucide="send-horizontal" class="btn-icon h-4 w-4"></i>
-            <span class="btn-spinner hidden" aria-hidden="true"></span>
-          </button>
-        </form>
-      </div>
-    </section>
-
-    <!-- ============ TAB 2: PHISHING LAB ============ -->
-    <section class="tab-view" id="tab-phishing" role="tabpanel">
-      <div class="glass-panel flex flex-col gap-4">
-        <div class="flex items-center justify-between gap-3 border-b border-cyberborder pb-3">
-          <div>
-            <h2 class="text-base font-bold text-slate-100">TryHackMe-Style Phishing Lab</h2>
-            <p class="font-mono text-[11px] text-slate-400">Email triage, BEC, quishing &amp; OAuth consent abuse</p>
-          </div>
-          <div class="scenario-count font-mono text-[11px] text-neon" id="phishing-count"></div>
+          <div class="scenario-count" id="phishing-count">Loading…</div>
         </div>
         <div class="filter-row" id="phishing-filters" role="group" aria-label="Phishing category filters"></div>
         <div class="scenario-grid" id="phishing-grid"></div>
-      </div>
-    </section>
+      </section>
 
-    <!-- ============ TAB 3: PASSWORD AUDIT ============ -->
-    <section class="tab-view" id="tab-password" role="tabpanel">
-      <div class="glass-panel flex flex-col gap-5">
-        <div class="flex items-center justify-between gap-3 border-b border-cyberborder pb-3">
-          <div>
-            <h2 class="text-base font-bold text-slate-100">Password Audit &amp; Smart Hardening</h2>
-            <p class="font-mono text-[11px] text-slate-400">Audit triggers ONLY on explicit button click — no keystroke tracking (no 429s)</p>
+      <!-- ================= MODULE 3: PASSWORD HARDENING AUDIT ================= -->
+      <section class="tab-view" id="tab-password" role="tabpanel" aria-label="Password Hardening Audit">
+        <div class="lab-head">
+          <div class="min-w-0">
+            <h2 class="module-title">Password Complexity &amp; Hardening</h2>
+            <p class="module-sub">Deterministic Shannon entropy · audit runs on click only</p>
           </div>
-          <i data-lucide="fingerprint" class="h-6 w-6 text-cyber"></i>
+          <i data-lucide="fingerprint" class="head-ico"></i>
         </div>
 
-        <div class="grid gap-6 lg:grid-cols-2">
-          <!-- Input column -->
+        <div class="pw-grid">
           <div class="flex flex-col gap-4">
-            <div>
-              <label for="password-field" class="mb-1.5 block font-mono text-[11px] uppercase tracking-wider text-slate-400">Password to Audit</label>
-              <div class="flex gap-2">
-                <div class="relative flex-1">
-                  <i data-lucide="lock" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500"></i>
+            <div class="field-card">
+              <label for="password-field" class="field-label">Password to Audit</label>
+              <div class="pw-input-row">
+                <div class="pw-input-wrap">
+                  <i data-lucide="lock" class="pw-input-ico"></i>
                   <input type="password" id="password-field" placeholder="e.g. ZacPaul0890" autocomplete="off"
-                         aria-label="Password to audit" class="chat-input pl-9 font-mono" />
+                         aria-label="Password to audit" class="pw-input" />
                 </div>
-                <button type="button" id="toggle-pw-visibility" class="btn-ghost" title="Show/hide password">
+                <button type="button" id="toggle-pw-visibility" class="icon-btn" title="Show / hide password" aria-label="Show or hide password">
                   <i data-lucide="eye" class="h-4 w-4"></i>
                 </button>
               </div>
-            </div>
 
-            <!-- Instant entropy preview -->
-            <div class="entropy-preview">
-              <div class="entropy-row">
-                <span>Instant Shannon Entropy (client-side):</span>
-                <strong id="entropy-live" class="text-cyber">0.00 bits</strong>
+              <div class="entropy-preview">
+                <div class="entropy-row">
+                  <span>Client-side Shannon entropy</span>
+                  <strong id="entropy-live" class="entropy-value">0.00 bits</strong>
+                </div>
+                <div class="entropy-meter" aria-hidden="true">
+                  <div class="entropy-fill" id="entropy-fill"></div>
+                </div>
               </div>
-              <div class="entropy-meter" aria-hidden="true"><div class="entropy-fill" id="entropy-fill"></div></div>
-            </div>
 
-            <button type="button" id="audit-btn" class="btn-audit">
-              <i data-lucide="scan-search" class="h-4 w-4"></i>
-              <span>Audit Password &amp; Generate Hardened Alternative</span>
-            </button>
-            <p class="rate-note font-mono text-[10px] text-slate-500">Analysis runs on click only — immune to input-event rate limits. Client-side Shannon entropy is computed instantly; the backend then returns the full hardened analysis.</p>
+              <button type="button" id="audit-btn" class="audit-btn">
+                <i data-lucide="scan-search" class="h-4 w-4"></i>
+                <span>Audit Password</span>
+              </button>
+              <p class="rate-note">
+                <i data-lucide="shield-alert" class="note-ico" aria-hidden="true"></i>
+                Analysis is click-only — no keystroke listeners, so no rate-limit exposure.
+              </p>
+            </div>
           </div>
 
-          <!-- Result column -->
           <div class="password-result" id="password-result" aria-live="polite">
             <div class="result-placeholder">
-              <i data-lucide="info" class="h-5 w-5 text-cyber"></i>
-              <p>Enter a password and click <strong>Audit</strong> to see original vs. hardened entropy, RockYou corpus checks, offline crack-time estimates, and Argon2id/bcrypt storage guidance.</p>
+              <i data-lucide="info" class="h-5 w-5 text-cyan"></i>
+              <p>Enter a candidate password and select <strong>Audit Password</strong> to compare original versus hardened entropy, run RockYou corpus checks, estimate offline crack time, and review Argon2id / bcrypt storage guidance.</p>
             </div>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- ============ TAB 4: SOC DRILLS ============ -->
-    <section class="tab-view" id="tab-soc" role="tabpanel">
-      <div class="glass-panel flex flex-col gap-4">
-        <div class="flex items-center justify-between gap-3 border-b border-cyberborder pb-3">
-          <div>
-            <h2 class="text-base font-bold text-slate-100">TryHackMe-Style SOC Incident Drills</h2>
-            <p class="font-mono text-[11px] text-slate-400">Endpoint, AD, lateral movement, web AppSec &amp; cloud telemetry</p>
+      <!-- ================= MODULE 4: SOC INCIDENT DRILLS ================= -->
+      <section class="tab-view" id="tab-soc" role="tabpanel" aria-label="SOC Incident Drills">
+        <div class="lab-head">
+          <div class="min-w-0">
+            <h2 class="module-title">SOC Incident Drills</h2>
+            <p class="module-sub">Endpoint, Active Directory, Web AppSec &amp; Cloud telemetry</p>
           </div>
-          <div class="scenario-count font-mono text-[11px] text-neon" id="soc-count"></div>
+          <div class="scenario-count" id="soc-count">Loading…</div>
         </div>
         <div class="filter-row" id="soc-filters" role="group" aria-label="SOC drill category filters"></div>
         <div class="scenario-grid" id="soc-grid"></div>
-      </div>
-    </section>
+      </section>
 
-    <!-- ============ TAB 5: CHEAT SHEETS ============ -->
-    <section class="tab-view" id="tab-cheatsheets" role="tabpanel">
-      <div class="glass-panel flex flex-col gap-4">
-        <div class="flex items-center justify-between gap-3 border-b border-cyberborder pb-3">
-          <div>
-            <h2 class="text-base font-bold text-slate-100">Multi-Tier Security Reference Matrices</h2>
-            <p class="font-mono text-[11px] text-slate-400">Select a tier to load its reference matrix</p>
+      <!-- ================= MODULE 5: SECURITY CHEAT SHEETS ================= -->
+      <section class="tab-view" id="tab-cheatsheets" role="tabpanel" aria-label="Security Cheat Sheets">
+        <div class="lab-head">
+          <div class="min-w-0">
+            <h2 class="module-title">Multi-Tier Reference Matrices</h2>
+            <p class="module-sub">Ports · Linux · OWASP · Event IDs · AD attacks · Volatility</p>
           </div>
-          <i data-lucide="table" class="h-6 w-6 text-cyber"></i>
+          <i data-lucide="table" class="head-ico"></i>
         </div>
-        <div class="tier-switcher-row" id="cheat-tiers" role="group" aria-label="Cheat sheet tier">
-          <button class="tier-btn active" data-cheat-tier="beginner"><i data-lucide="sprout" class="h-3.5 w-3.5"></i><span>Beginner</span></button>
-          <button class="tier-btn" data-cheat-tier="intermediate"><i data-lucide="shield-check" class="h-3.5 w-3.5"></i><span>Intermediate</span></button>
-          <button class="tier-btn" data-cheat-tier="advanced"><i data-lucide="brain" class="h-3.5 w-3.5"></i><span>Advanced</span></button>
+        <div class="tier-group wide" id="cheat-tiers" role="group" aria-label="Cheat sheet tier">
+          <button class="tier-btn active" data-cheat-tier="beginner">
+            <i data-lucide="sprout" class="h-3 w-3"></i><span class="tier-name">Beginner</span>
+          </button>
+          <button class="tier-btn" data-cheat-tier="intermediate">
+            <i data-lucide="shield-check" class="h-3 w-3"></i><span class="tier-name">Intermediate</span>
+          </button>
+          <button class="tier-btn" data-cheat-tier="advanced">
+            <i data-lucide="brain" class="h-3 w-3"></i><span class="tier-name">Advanced</span>
+          </button>
         </div>
         <div id="cheat-container" class="cheat-container" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="app-footer">
+      <div class="foot-inner">
+        <span class="foot-brand">CyberGPT v2.0 — Defensive Cyber Intelligence &amp; SOC Operations Simulator</span>
+        <span class="foot-meta">NIST SP 800-61r2 / SANS PICERL · Argon2id m=64MB t=3 p=4 · All identifiers simulated</span>
       </div>
-    </section>
-  </main>
+      <div class="foot-disclaimer">
+        <i data-lucide="shield-check" class="foot-disc-ico" aria-hidden="true"></i>
+        <span>All scenarios are fictional and for educational use only.</span>
+      </div>
+    </footer>
+  </div>
+</div>
 
-  <!-- ===================== FOOTER ===================== -->
-  <footer class="border-t border-cyberborder bg-surface/60">
-    <div class="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2 px-4 py-4 sm:px-6">
-      <span class="font-mono text-[11px] text-slate-500">CyberGPT v2.0 — Defensive Cyber Intelligence &amp; SOC Operations Simulator</span>
-      <span class="font-mono text-[10px] text-slate-600">Deep SOC Mode · JetBrains Mono telemetry · NIST SP 800-61r2 / SANS PICERL · Argon2id m=64MB/t=3/p=4</span>
-    </div>
-    <div class="text-center py-2 border-t border-cyberborder bg-surface/40">
-      <span class="font-mono text-[11px] text-slate-400">All scenarios are fictional and for educational use only.</span>
-    </div>
-  </footer>
+<!-- =====================================================================
+     MESSAGE COMPOSER TEMPLATE (moved between the empty-state slot and the
+     sticky dock so a single instance never has a duplicate ID)
+     ===================================================================== -->
+<template id="composer-template">
+  <form class="composer" id="chat-form" autocomplete="off">
+    <input type="file" id="telemetry-file" class="hidden" aria-hidden="true" tabindex="-1" />
 
-  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <button type="button" id="telemetry-btn" class="composer-attach" title="Attach telemetry artifact" aria-label="Attach telemetry artifact">
+      <i data-lucide="paperclip" class="h-4 w-4"></i>
+    </button>
+
+    <div class="composer-field">
+      <textarea id="chat-input" class="composer-input" rows="1" placeholder="Ask the SOC copilot… (Enter to send, Shift+Enter for a new line)"
+                aria-label="Message the SOC copilot"></textarea>
+      <span class="composer-attachment" id="composer-attachment" hidden>
+        <i data-lucide="file-text" class="h-3 w-3"></i>
+        <span id="composer-attachment-name"></span>
+        <button type="button" id="composer-attachment-clear" class="attachment-clear" aria-label="Remove attachment">
+          <i data-lucide="x" class="h-3 w-3"></i>
+        </button>
+      </span>
+    </div>
+
+    <button type="submit" id="chat-send" class="composer-send" disabled title="Send message" aria-label="Send message">
+      <i data-lucide="arrow-up" class="btn-icon h-4 w-4"></i>
+      <span class="btn-spinner hidden" aria-hidden="true"></span>
+    </button>
+  </form>
+</template>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>

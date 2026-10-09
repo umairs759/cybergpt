@@ -162,6 +162,30 @@ def api_chat():
 
 
 # ----------------------------------------------------------------------------
+# API: Clear History (session memory purge)
+# ----------------------------------------------------------------------------
+@app.route("/api/clear-history", methods=["POST"])
+def api_clear_history():
+    """Purge the in-memory chat history for a session (session memory flush).
+
+    The server keeps conversation state in SERVER_CHAT_MEMORY keyed by
+    session_id (never in cookies). This route drops that session's deque so a
+    "Flush Session Memory" action genuinely clears server-side state; the
+    client then rotates to a fresh session_id.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    session_id = str(data.get("session_id", "default"))
+    purged = SERVER_CHAT_MEMORY.pop(session_id, None)
+    messages_removed = len(purged) if purged else 0
+    return jsonify({
+        "success": True,
+        "session_id": session_id,
+        "messages_removed": messages_removed,
+        "message": f"Session memory flushed ({messages_removed} message(s) removed).",
+    })
+
+
+# ----------------------------------------------------------------------------
 # API: Password Audit (explicit-click only; no keystroke hooks)
 # ----------------------------------------------------------------------------
 @app.route("/api/password/audit", methods=["POST"])

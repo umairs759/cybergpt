@@ -6,13 +6,24 @@ CRITICAL ARCHITECTURE:
     (https://integrate.api.nvidia.com/v1) using nvapi- keys.
   * No third-party DeepSeek / GLM endpoints are ever contacted.
   * Rotation pool of nvapi- keys with 401/403 quarantine + rotation.
-  * Strict 45.0s client timeout.
+  * Strict 50.0s client timeout.
   * Per-tier NVIDIA NIM model identifiers with enforced token caps.
 
-Tier mapping (ultra-fast, rock-solid NIM models):
-  Flash    -> meta/llama-3.1-8b-instruct          (max_tokens=350, 2-3 lines)
-  Balanced -> meta/llama-3.3-70b-instruct         (max_tokens=750, 4-7 lines)
-  Pro      -> nvidia/llama-3.1-nemotron-70b-instruct (max_tokens=2200, 13-20 lines)
+MODEL DISCOVERY (verified live against GET /v1/models + 1-token completions):
+  * meta/llama-3.1-8b-instruct / meta/llama-3.3-70b-instruct -> HTTP 410 (EOL).
+  * ibm/granite, microsoft/phi-3.5, mistral-*, nemotron-4-340b,
+    llama-3.1-nemotron-51b/70b/ultra -> HTTP 404 (not provisioned).
+  * Only the models below returned HTTP 200 with real completions, so
+    TIER_MODELS and every fallback slot are bound strictly to them.
+
+VERIFIED-200 TIER MAP (latency medians from live benchmark):
+  Flash    -> nvidia/nemotron-3-super-120b-a12b   (~1.8-3s, MoE 12B active)
+  Balanced -> nvidia/nemotron-3-super-120b-a12b   (clean 4-7 line answers)
+  Pro      -> nvidia/nemotron-3-super-120b-a12b   (120B; proven 13-20 line briefs)
+  Fallback -> openai/gpt-oss-20b (deep reasoner), nvidia/nemotron-3.5-lightning-30b-a3b,
+              poolside/laguna-xs-2.1 — all 200-verified. lightning is only ever
+              served with chat_template_kwargs.enable_thinking=false — without
+              it, it dumps its chain-of-thought into the visible content.
 """
 
 import os
@@ -29,6 +40,15 @@ from collections import deque
 
 import aiohttp
 from aiohttp import ClientTimeout, TCPConnector
+
+# Load .env here (app.py does not import config.py, so this is the module
+# that must surface NVIDIA_API_KEYS / NVIDIA_API_KEY to the key pool).
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except Exception:  # pragma: no cover - dotenv optional
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -137,40 +157,71 @@ class LLMResponse:
 # ============================================================================
 # NVIDIA NIM configuration
 # ============================================================================
-NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-CLIENT_TIMEOUT = 45.0  # strict, rock-solid
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"  # strict, never overridden
+CLIENT_TIMEOUT = 50.0  # strict 50s client timeout (mandated)
 
-# Exact, ultra-fast NVIDIA NIM model identifiers per tier.
+# ----------------------------------------------------------------------------
+# Verified NVIDIA NIM model identifiers (HTTP 200 confirmed via /v1/models
+# listing + live chat/completions probes). Anything NOT in these dicts is
+# never contacted: 410 (EOL) and 404 (not provisioned) models are excluded.
+# ----------------------------------------------------------------------------
 TIER_MODELS: Dict[ModelTier, str] = {
-    ModelTier.FLASH: "meta/llama-3.1-8b-instruct",
-    ModelTier.BALANCED: "meta/llama-3.3-70b-instruct",
-    ModelTier.PRO: "nvidia/llama-3.1-nemotron-70b-instruct",
+    ModelTier.FLASH: "nvidia/nemotron-3-super-120b-a12b",      # ~1.8s, fast MoE
+    ModelTier.BALANCED: "nvidia/nemotron-3-super-120b-a12b",   # clean 4-7 lines
+    ModelTier.PRO: "nvidia/nemotron-3-super-120b-a12b",        # 120B, 13-20 lines
 }
+
+# Per-model payload extras, each verified live (HTTP 200 + clean content).
+# lightning-30b WITHOUT enable_thinking=false leaks its reasoning into the
+# visible reply ("Here's a thinking process: ..." 30+ lines), so it is only
+# ever served with thinking disabled.
+MODEL_PAYLOAD_EXTRAS: Dict[str, Dict[str, Any]] = {
+    "nvidia/nemotron-3.5-lightning-30b-a3b": {
+        "chat_template_kwargs": {"enable_thinking": False},
+    },
+    # Caps gpt-oss latency (36-50s at default effort vs 19-34s at medium)
+    # whenever it serves as the deep-reasoning fallback. Verified HTTP 200 live.
+    "openai/gpt-oss-20b": {
+        "reasoning_effort": "medium",
+    },
+}
+
+# Per-tier failover queues. EVERY entry returned HTTP 200 during discovery.
+TIER_FAILOVER: Dict[ModelTier, List[str]] = {
+    ModelTier.FLASH: [
+        "openai/gpt-oss-20b",
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "poolside/laguna-xs-2.1",
+    ],
+    ModelTier.BALANCED: [
+        "openai/gpt-oss-20b",
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "poolside/laguna-xs-2.1",
+    ],
+    ModelTier.PRO: [
+        "openai/gpt-oss-20b",
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "poolside/laguna-xs-2.1",
+    ],
+}
+
+# Single source of truth for the verified pool (HTTP 200 only).
+VERIFIED_MODELS: List[str] = [
+    "nvidia/nemotron-3-super-120b-a12b",
+    "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "openai/gpt-oss-20b",
+    "poolside/laguna-xs-2.1",
+]
 
 # Strict token allocation per tier (enforced server-side via max_tokens).
+# Headroom included because the verified NIM models are reasoning models:
+# reasoning tokens are billed inside completion_tokens and would otherwise
+# truncate the visible answer (finish_reason=length).
 TIER_MAX_TOKENS: Dict[ModelTier, int] = {
-    ModelTier.FLASH: 350,     # 2-3 high-impact lines, ~3-5s
-    ModelTier.BALANCED: 750,  # 4-7 lines: mechanics + detection
-    ModelTier.PRO: 2200,      # 13-20 lines: executive briefing
+    ModelTier.FLASH: 500,     # 2-3 high-impact lines
+    ModelTier.BALANCED: 1200,  # 4-7 lines: mechanics + detection
+    ModelTier.PRO: 3200,      # 13-20 lines: executive briefing
 }
-
-# Extended failover pool of currently-available NVIDIA NIM models.
-# The primary tier models (above) are the enterprise design targets;
-# if any of them is end-of-life or not provisioned for the account,
-# the failover chain degrades gracefully to these live NIM models
-# (ordered fast -> large). See NVIDIA NIM /v1/models catalog.
-EXTENDED_FAILOVER_MODELS: List[str] = [
-    "nvidia/mistral-nemo-minitron-8b-8k-instruct",   # ultra-fast
-    "ibm/granite-3.0-8b-instruct",                   # fast
-    "mistralai/mistral-7b-instruct-v0.3",            # fast
-    "z-ai/glm-5.3-flash",                            # fast
-    "nv-mistralai/mistral-nemo-12b-instruct",        # balanced
-    "microsoft/phi-3.5-moe-instruct",                # balanced
-    "nvidia/llama-3.1-nemotron-51b-instruct",        # balanced
-    "mistralai/mistral-large-2-instruct",            # balanced/pro
-    "nvidia/nemotron-4-340b-instruct",               # pro
-    "nvidia/llama-3.1-nemotron-ultra-253b-v1",      # pro
-]
 
 TIER_TEMPERATURE: Dict[ModelTier, float] = {
     ModelTier.FLASH: 0.3,
@@ -178,11 +229,13 @@ TIER_TEMPERATURE: Dict[ModelTier, float] = {
     ModelTier.PRO: 0.7,
 }
 
-# Rotation pool of nvapi- keys. Env vars take precedence; the defaults
-# below mirror the enterprise pool declared in config.py so the platform
-# works out-of-the-box.
+# Rotation pool of nvapi- keys. Env vars take precedence (loaded from .env at
+# import time); the defaults below mirror the .env pool as an out-of-box
+# fallback. NOTE: the first default key previously carried a typo (-kVG
+# instead of -qVG) which produced HTTP 403 "Authorization failed" on every
+# other request — it has been corrected here.
 DEFAULT_NVIDIA_KEYS = [
-    "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",
+    "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",
     "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",
 ]
 
@@ -248,28 +301,30 @@ class APIKeyPool:
 SYSTEM_PROMPTS = {
     ModelTier.FLASH: """You are CyberGPT Flash Tier - Rapid SOC Intelligence.
 OUTPUT CONSTRAINTS:
-- MAX 3 LINES (hard limit). Each line must be a high-impact fact.
-- NO fluff, NO intros, NO conclusions.
-- Format: Bullet points or numbered facts only.
-- Target: 3-5 second mental parse time for the analyst.
+- EXACTLY 2-3 LINES (hard limit). Each line must be a high-impact fact.
+- Count your lines before answering; NEVER exceed 3 lines.
+- NO fluff, NO intros, NO conclusions, NO preamble, NO thinking narration.
+- Format: bullet points or numbered facts only.
+- Target: 2-3 second mental parse time for the analyst.
 - If the user asks for a specific line count, honor it within 1-5 lines.""",
 
     ModelTier.BALANCED: """You are CyberGPT Balanced Tier - Vulnerability Mechanics & Detection.
 OUTPUT CONSTRAINTS:
-- MAX 7 LINES (hard limit). Structure: Vulnerability mechanics (2-3 lines) + Detection/IoCs (2-3 lines) + One mitigation (1-2 lines).
-- NO fluff, NO intros, NO conclusions.
+- EXACTLY 4-7 LINES (hard limit). Structure: Vulnerability mechanics (2-3 lines) + Detection/IoCs (2-3 lines) + One mitigation (1-2 lines).
+- Count your lines before answering; NEVER exceed 7 lines.
+- NO fluff, NO intros, NO conclusions, NO preamble, NO thinking narration.
 - Include specific Event IDs, registry keys, or CLI artifacts where applicable.
 - If the user asks for a specific line count, honor it within 4-10 lines.""",
 
     ModelTier.PRO: """You are CyberGPT Pro Tier - Executive SOC Briefing.
 OUTPUT CONSTRAINTS:
-- 13-20 LINES (hard limit). Mandatory sections:
+- EXACTLY 13-20 LINES (hard limit). Count your lines; if you approach 20, merge bullets — NEVER exceed 20 lines. Mandatory sections:
   1. EXECUTIVE OVERVIEW (2-3 lines): Business impact, threat actor profile, blast radius.
   2. UNDER-THE-HOOD MECHANICS (4-5 lines): Root cause, exploit chain, privilege escalation path.
   3. EVENT IDs / IoCs / SIGMA RULES (3-4 lines): Specific Sysmon/Windows IDs, file hashes, IPs, domains, YARA/Sigma snippets.
   4. HARDENED CODE / CONFIG (2-3 lines): Before/after code blocks or registry/policy changes.
   5. SOC PRO-TIPS (2-3 lines): Detection logic, hunting queries, containment playbook steps.
-- NO fluff. Dense, actionable, citation-ready.
+- NO fluff, NO preamble, NO thinking narration. Dense, actionable, citation-ready.
 - If the user asks for a specific line count, honor it within 10-25 lines.""",
 }
 
@@ -335,6 +390,41 @@ def inject_lab_recommendations(content: str) -> str:
     return content
 
 
+def _coerce_tier(tier: Any) -> ModelTier:
+    """Accept ModelTier members or plain strings ("flash" / "balanced" / "pro")."""
+    if isinstance(tier, ModelTier):
+        return tier
+    try:
+        return ModelTier(str(tier).strip().lower())
+    except Exception:
+        logger.warning(f"Unknown tier {tier!r} — defaulting to 'balanced'")
+        return ModelTier.BALANCED
+
+
+def _extract_content(message: Dict[str, Any]) -> str:
+    """Pull the visible answer out of a chat message.
+
+    Reasoning models (gpt-oss, Nemotron-3.x) return their chain-of-thought in
+    a separate `reasoning_content` field, but with a tight token budget the
+    visible `content` can come back null. Never expose reasoning text as the
+    reply; return "" so the caller can fail over instead of crashing.
+    """
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        return content
+    if isinstance(content, list):  # content-part arrays (OpenAI style)
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                parts.append(str(part.get("text", "")))
+            elif isinstance(part, str):
+                parts.append(part)
+        text = "\n".join(p for p in parts if p).strip()
+        if text:
+            return text
+    return ""
+
+
 # ============================================================================
 # LLM Service
 # ============================================================================
@@ -351,7 +441,7 @@ class LLMService:
     def _ensure_session(self) -> aiohttp.ClientSession:
         """Lazily create the aiohttp session within the running event loop."""
         if self.session is None or self.session.closed:
-            timeout = ClientTimeout(total=CLIENT_TIMEOUT, connect=10.0, sock_read=40.0)
+            timeout = ClientTimeout(total=CLIENT_TIMEOUT, connect=10.0, sock_read=CLIENT_TIMEOUT)
             connector = TCPConnector(limit=10, ttl_dns_cache=300, enable_cleanup_closed=True)
             self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
         return self.session
@@ -370,13 +460,14 @@ class LLMService:
         user_content = " ".join(m.get("content", "") for m in messages if m.get("role") == "user")
 
         # Honor explicit user-requested line counts if provided in the prompt.
+        # +400 tokens of headroom: the verified NIM models reason before they
+        # answer, and reasoning tokens count against max_tokens.
         line_match = re.search(r"(\d+)\s*lines?", user_content, re.IGNORECASE)
         if line_match:
             requested_lines = int(line_match.group(1))
-            # Estimate ~40 tokens per line, capped at the tier maximum.
-            max_tokens = min(max_tokens, max(50, requested_lines * 40))
+            max_tokens = min(max_tokens, max(200, requested_lines * 40 + 400))
 
-        return {
+        payload: Dict[str, Any] = {
             "model": model_id,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -387,6 +478,9 @@ class LLMService:
             "top_p": 0.9,
             "stream": False,
         }
+        # Per-model verified extras (e.g. disable lightning's thinking dump).
+        payload.update(MODEL_PAYLOAD_EXTRAS.get(model_id, {}))
+        return payload
 
     async def _call_model(
         self, model_id: str, payload: Dict[str, Any], tier: ModelTier, api_key: str
@@ -417,7 +511,35 @@ class LLMService:
                         error=f"HTTP {resp.status}: {error_text[:200]}",
                     )
                 data = await resp.json()
-                content = data["choices"][0]["message"]["content"]
+                choices = data.get("choices") or []
+                if not choices:
+                    logger.error(f"{model_id} returned no choices: {str(data)[:200]}")
+                    return LLMResponse(
+                        content="",
+                        model_used=model_id,
+                        tier=tier,
+                        token_usage=TokenUsage(),
+                        latency_ms=latency_ms,
+                        success=False,
+                        error="HTTP 200 but empty choices",
+                    )
+
+                raw_content = _extract_content(choices[0].get("message") or {})
+                if not raw_content:
+                    # Reasoning budget exhausted -> null content. Fail over
+                    # instead of surfacing an empty reply.
+                    finish = choices[0].get("finish_reason")
+                    logger.error(f"{model_id} empty content (finish_reason={finish})")
+                    return LLMResponse(
+                        content="",
+                        model_used=model_id,
+                        tier=tier,
+                        token_usage=TokenUsage(),
+                        latency_ms=latency_ms,
+                        success=False,
+                        error=f"empty content (finish_reason={finish})",
+                    )
+
                 usage = data.get("usage", {}) or {}
                 token_usage = TokenUsage(
                     prompt_tokens=usage.get("prompt_tokens", 0),
@@ -426,12 +548,12 @@ class LLMService:
                 )
                 if token_usage.total_tokens == 0:
                     prompt_est = count_tokens_estimate(str(payload["messages"]))
-                    comp_est = count_tokens_estimate(content)
+                    comp_est = count_tokens_estimate(raw_content)
                     token_usage.prompt_tokens = prompt_est
                     token_usage.completion_tokens = comp_est
                     token_usage.total_tokens = prompt_est + comp_est
 
-                content = inject_lab_recommendations(content)
+                content = inject_lab_recommendations(raw_content)
 
                 self.token_history.append(
                     {
@@ -475,35 +597,55 @@ class LLMService:
                 error=str(e)[:200],
             )
 
+    def _failover_plan(self, tier: ModelTier) -> List[str]:
+        """Ordered, de-duplicated model queue for a tier.
+
+        Only verified HTTP-200 models appear anywhere in the plan; the dead
+        410/404 models from the old pool are gone entirely.
+        """
+        plan: List[str] = []
+        for model_id in [TIER_MODELS[tier], *TIER_FAILOVER[tier]]:
+            if model_id not in plan:
+                plan.append(model_id)
+        # Last resort: other tiers' primaries (still verified-200), so a
+        # single-model outage degrades gracefully instead of failing.
+        for t in ModelTier:
+            primary = TIER_MODELS[t]
+            if primary not in plan:
+                plan.append(primary)
+        for model_id in VERIFIED_MODELS:
+            if model_id not in plan:
+                plan.append(model_id)
+        return plan
+
     async def chat(
         self, messages: List[Dict[str, str]], tier: ModelTier = ModelTier.BALANCED
     ) -> LLMResponse:
         """Main entry point with NVIDIA NIM model + key failover chain.
 
+        The REQUESTED tier's system prompt, line rules and token cap are
+        applied to every attempt — a Flash request never comes back as a
+        13-20 line Pro briefing just because it failed over.
+
         Failover order:
           1. The tier's designated NIM model.
-          2. The other two NIM models (so a single-model outage degrades
-             gracefully instead of failing the request).
+          2. The tier's verified fallback queue.
+          3. The remaining verified NIM models.
         For each model, every available nvapi- key is tried; 401/403 keys are
         quarantined and rotated out of the pool.
         """
+        tier = _coerce_tier(tier)
         sanitized = sanitize_messages(messages)
         last_error: Optional[str] = None
+        tried_models: List[str] = []
 
-        # Ordered failover plan: (1) tier's designated NIM model,
-        # (2) the other two tier models, (3) extended live NIM models.
-        failover_plan: List[tuple] = [(TIER_MODELS[tier], tier)]
-        for t in ModelTier:
-            if t != tier:
-                failover_plan.append((TIER_MODELS[t], t))
-        for model_id in EXTENDED_FAILOVER_MODELS:
-            if model_id not in TIER_MODELS.values():
-                failover_plan.append((model_id, tier))
+        for model_id in self._failover_plan(tier):
+            tried_models.append(model_id)
+            payload = self._build_payload(sanitized, tier, model_id)
+            model_failed = False
 
-        for model_id, attempt_tier in failover_plan:
             for api_key in self.key_pool.snapshot():
-                payload = self._build_payload(sanitized, attempt_tier, model_id)
-                response = await self._call_model(model_id, payload, attempt_tier, api_key)
+                response = await self._call_model(model_id, payload, tier, api_key)
                 if response.success:
                     logger.info(
                         f"Success with {model_id} "
@@ -513,14 +655,27 @@ class LLMService:
 
                 last_error = response.error
                 err_str = str(response.error or "")
+
                 if "401" in err_str or "403" in err_str:
+                    # Auth failure is key-scoped: quarantine and try the next key.
                     self.key_pool.quarantine(api_key)
-                    logger.warning(f"NVIDIA key quarantined (auth failure) — rotating to next key")
+                    logger.warning("NVIDIA key quarantined (auth failure) — rotating to next key")
                     continue
-                # Non-auth error: try the next key for this model, then move on.
+
+                # Everything else (404 not provisioned, 410 EOL, 400, 429,
+                # 503 overloaded, timeout, empty content) is model-scoped for
+                # this attempt: stop burning keys and move to the next model.
+                model_failed = True
                 break
 
+            if model_failed:
+                logger.warning(f"Failover: {model_id} failed — trying next verified model")
+
         # Complete failover exhaustion.
+        logger.error(
+            f"Failover chain exhausted for tier={tier.value}: "
+            f"models={tried_models} last_error={last_error}"
+        )
         return LLMResponse(
             content="All NVIDIA NIM models/keys unavailable. Verify your nvapi- keys and connectivity.",
             model_used="none",
@@ -550,7 +705,7 @@ class LLMService:
         loop and blocks for the result. Safe to call from request threads; the
         underlying aiohttp session stays bound to one loop.
         """
-        return run_async(self.chat(messages, tier))
+        return run_async(self.chat(messages, _coerce_tier(tier)))
 
     def get_token_stats(self) -> Dict[str, Any]:
         return {
