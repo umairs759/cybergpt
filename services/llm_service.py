@@ -991,6 +991,44 @@ def _classify_intent(message: str, mode: str = "cyber") -> IntentResult:
             requires_telemetry=False,
         )
 
+    # --- 3. Fuzzy / Multilingual Identity Detection (additional matching) ---
+    # Normalize: remove common punctuation, collapse whitespace
+    normalized = re.sub(r"[^\w\s]", " ", lower)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
+    # Check identity phrases across languages (handles typos, Roman Urdu, etc.)
+    is_identity = False
+    identity_phrases_check = [
+        "your name", "who are you", "tera name", "tum kaun ho",
+        "who made you", "whats your purpose", "why choose you",
+        "kya special hai", " kisne banaya"
+    ]
+    cyber_guard = ["zero trust", "pass the hash", "sql injection", "xss",
+                   "cyber security", "event log", "firewall", "malware",
+                   "phishing", "red team", "blue team"]
+    
+    for phrase in identity_phrases_check:
+        if phrase in normalized:
+            # Guard: if query also mentions cyber concepts, NOT an identity query
+            if not any(kw in normalized for kw in cyber_guard):
+                is_identity = True
+                break
+
+    if is_identity:
+        return IntentResult(
+            intent=Intent.META_IDENTITY,
+            bypass_llm=True,
+            direct_response=(
+                "I'm CyberGPT, a specialized defensive cybersecurity learning assistant "
+                "and SOC operations simulator developed by Muhammad Umair. Unlike "
+                "general-purpose models, I provide hands-on attack telemetry analysis, "
+                "SIEM log correlation, scenario drills, and defensive guidance tailored "
+                "for cyber learners. Switch to Normal mode anytime for general topics!"
+            ),
+            section_name=None,
+            requires_telemetry=False,
+        )
+
     # --- 2. Mode Evaluation FIRST (before all other classification) ---
     # If mode == 'normal': bypass ALL cyber-only off-topic filters,
     # send prompt directly to the LLM with a helpful general-purpose system prompt.
