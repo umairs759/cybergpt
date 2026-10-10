@@ -1,0 +1,155 @@
+{
+  "category": "Network/DNS-TLS",
+  "labs": [
+    {
+      "id": "net-01",
+      "lab_type": "soc",
+      "title": "DNS Tunneling — Data Exfiltration via Subdomains",
+      "category": "Network/DNS-TLS",
+      "difficulty": "Advanced",
+      "estimated_minutes": 15,
+      "mitre_attack": ["T1048.001 Exfiltration: DNS", "T1071.004 Application Layer Protocol: DNS"],
+      "learning_objectives": [
+        "Identify DNS tunneling in network telemetry",
+        "Decode base64-encoded data within subdomain queries",
+        "Build SIGMA rules for outbound DNS queries with high entropy labels"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). An attacker exfiltrates data from a compromised host by encoding it in DNS query subdomains to an attacker-controlled domain. The organization's DNS forwarder resolves these queries via an external resolver.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== DNS QUERY LOGS (resolver: 8.8.8.8) ===\nquery: T1w3st-abc123.xn--exmaple-net.example\nquery: T1w3st-def456.xn--exmaple-net.example\nquery: T1w3st-ghi789.xn--exmaple-net.example\n=== ENCODED PAYLOAD ===\nBase32-decoded data: 'PowerShell -nop -w hidden -c IEX ...'\n=== DECODED EXFILtrated DATA ===\nCommand & control beacon string with stolen credentials and session cookie values",
+      "iocs": ["xn--exmaple-net.example", "T1w3st-abc123", "T1w3st-def456", "T1w3st-ghi789"],
+      "mitre_tactics": ["TA0011 Command & Control", "TA0010 Exfiltration"],
+      "questions": [
+        {
+          "question": "What is the core mechanism that enables DNS tunneling for exfiltration?",
+          "options": [
+            "Attacker registers a domain and controls an authoritative DNS server that responds to queries from the victim's resolver",
+            "Attacker encodes data into subdomain labels of queries sent to any public DNS resolver, and a malicious resolver logs or reflects the encoded data",
+            "The victim's host sends DNS queries for subdomains that contain base64-encoded data, and an attacker-controlled resolver decodes and exfiltrates the data",
+            "DNS tunneling relies on DNS responses containing executable code that the host runs"
+          ],
+          "correct_index": 2,
+          "hints": [
+            "Think about the direction of data flow: who initiates and who receives?",
+            "What part of the DNS query contains the encoded data — the name being resolved or the response?"
+          ],
+          "explanation": "DNS tunneling works by encoding data into subdomain labels of DNS queries sent from the compromised host to a public or attacker-controlled DNS resolver. The query names look like abc123.xn--exmaple-net.example, where 'abc123' is base32-encoded data. The attacker controls the resolver (or a malicious recursive resolver) that collects these queries and decodes the data exfiltrated out of the target network. The DNS protocol itself is abusing its ubiquity and often-permissive egress rules."
+        },
+        {
+          "question": "Which SIGMA rule would most effectively detect potential DNS tunneling in forwarder logs?",
+          "options": [
+            "Detect all DNS queries with a TTL value greater than 12 hours",
+            "Detect DNS queries where the subdomain label has entropy > 4.5 bits per character AND queries per domain > 100 in 5 minutes",
+            "Detect all DNS queries with IP addresses in the query name",
+            "Detect DNS responses with QR bit set to 1"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "What characteristic of DNS queries is a strong indicator of tunneling?",
+            "High entropy in subdomain names is unusual for normal DNS traffic."
+          ],
+          "explanation": "A SIGMA rule that detects DNS queries where the subdomain label has high Shannon entropy (e.g., > 4.5 bits per character) combined with a high query volume to the same domain in a short time window is a strong indicator of DNS tunneling. Normal DNS traffic (e.g., CDN lookups, AD resolution) typically has low-entropy subdomains and predictable query patterns. The entropy threshold catches encoded data, and the volume threshold reduces false positives from legitimate single queries."
+        }
+      ]
+    },
+    {
+      "id": "net-02",
+      "lab_type": "soc",
+      "title": "TLS Certificate Validation — Misconfigured Self-Signed Cert",
+      "category": "Network/DNS-TLS",
+      "difficulty": "Beginner",
+      "estimated_minutes": 8,
+      "mitre_attack": ["T1583.001 Execution: JavaScript Encryption", "T1068 Exploitation for Privilege Escalation"],
+      "learning_objectives": [
+        "Identify self-signed vs CA-signed certificates in TLS handshakes",
+        "Understand the security implications of bypassing certificate validation",
+        "Recommend certificate pinning and trusted CA mitigations"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A developer imports a self-signed certificate into a production application to avoid purchasing a CA-signed cert. The application accepts any certificate without validation, making it vulnerable to man-in-the-middle attacks.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== TLS HANDSHAKE LOG ===\nCertificate chain length: 1\nIssuer: CN=dev-self-signed-CA\nSubject: CN=prod-api.internal\nValidity: 365 days (from 2026-01-01 to 2026-01-01 next year)\n=== APPLICATION SETTING ===\ninsecure_http_option: true\nSSL_VERIFY_MODE: none\n=== MITM SCENARIO ===\nAttacker presents own cert; application accepts it without validation; attacker reads all TLS traffic",
+      "iocs": ["dev-self-signed-CA", "insecure_http_option: true", "SSL_VERIFY_MODE: none"],
+      "mitre_tactics": ["TA0007 Discovery", "TA0001 Initial Access"],
+      "questions": [
+        {
+          "question": "Why is it dangerous for an application to accept any TLS certificate without validation (e.g., `insecure_http_option: true`)?",
+          "options": [
+            "It prevents the application from establishing any TLS connection",
+            "It allows a man-in-the-middle attacker to intercept and modify all encrypted traffic",
+            "It forces all certificates to be self-signed, which is insecure",
+            "It disables HTTP/2 support for the application"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "What does 'accepting any certificate' mean for the TLS handshake?",
+            "Who can benefit from this in an attack scenario?"
+          ],
+          "explanation": "When an application bypasses certificate validation, it does not verify that the presented certificate was issued by a trusted Certificate Authority or that the certificate's CN/SAN matches the expected hostname. This means an attacker who can position themselves in the network path (e.g., via rogue AP, ISP interception, or network pivot) can present their own certificate, and the application will accept it, decrypting all TLS traffic to the attacker. This enables full man-in-the-middle observation and modification of application data."
+        },
+        {
+          "question": "Which of the following is the recommended mitigation for production applications?",
+          "options": [
+            "Disable all TLS and use HTTPS only with self-signed certs",
+            "Import only CA-signed certificates and enable certificate validation (verify the full chain + hostname match)",
+            "Use the same self-signed cert across all services for consistency",
+            "Accept any certificate but enable TLS 1.3 only"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "What does 'certificate validation' actually check?",
+            "Why is importing CA-signed certs better than self-signed?"
+          ],
+          "explanation": "The recommended mitigation is to use certificates issued by a trusted Certificate Authority (CA) and to enable full certificate validation: verify the certificate chain back to a trusted root, confirm the certificate is valid (not expired), and match the hostname (CN or SAN) against the expected domain. This ensures that even if an attacker presents a different certificate, the application will reject it and terminate the connection rather than accept it."
+        }
+      ]
+    },
+    {
+      "id": "net-03",
+      "lab_type": "soc",
+      "title": "HTTP Strict Transport Security (HSTS) Preference Attack",
+      "category": "Network/DNS-TLS",
+      "difficulty": "Intermediate",
+      "estimated_minutes": 12,
+      "mitre_attack": ["T1583.001 Execution: JavaScript Encryption", "T1071.001 Application Layer Protocol: HTTP"],
+      "learning_objectives": [
+        "Understand how HSTS works and how it is intended to force HTTPS",
+        "Identify HSTS preference bypass techniques",
+        "Configure HSTS with appropriate max-age and includeSubDomains"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A user's browser has HSTS enabled for example.com after a previous visit over HTTPS. An attacker tricks the user into visiting http://example.com over HTTP, and the browser automatically upgrades to HTTPS without verifying the certificate, allowing a MITM on the initial HTTP connection.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== BROWSER HSTS STATE ===\nHost: example.com\nMax-Age: 31536000 (1 year)\nIncludeSubDomains: true\nPreload: true\n=== ATTACK SCENARIO ===\nUser clicks phishing link: http://example.com/reset-password\nBrowser auto-upgrades to HTTPS://example.com/reset-password\nAttacker presents invalid TLS cert on the HTTPS connection\nUser sees certificate warning but clicks 'Proceed' to access the page\n=== MITIGATION ===\nHSTS preload list inclusion; HTTP to HTTPS redirects with 301; cert validation enforcement",
+      "iocs": ["HSTS header: max-age=31536000", "http://example.com", "certificate warning bypass"],
+      "mitre_tactics": ["TA0001 Initial Access", "TA0007 Discovery"],
+      "questions": [
+        {
+          "question": "What is the primary security purpose of HSTS?",
+          "options": [
+            "To force all browser connections to use HTTPS for the configured domain and subdomains",
+            "To encrypt all HTTP traffic using a stronger cipher suite",
+            "To prevent any HTTP connections to the domain at any time",
+            "To issue client certificates for mutual TLS authentication"
+          ],
+          "correct_index": 0,
+          "hints": [
+            "What does HSTS stand for and what is its main effect?",
+            "Does HSTS prevent HTTP connections entirely or just upgrade them?"
+          ],
+          "explanation": "HSTS (HTTP Strict Transport Security) is a policy mechanism that tells browsers to only communicate with the server over HTTPS, never over HTTP. Once a domain is on the HSTS list (via header, preload, or user history), the browser automatically upgrades any HTTP request to HTTPS and will not send the request over HTTP even if the user types http:// or clicks an HTTP link. This protects against downgrade attacks and protocol removal."
+        },
+        {
+          "question": "Which attack technique exploits the browser's automatic HSTS upgrade to enable a MITM on the initial HTTP request?",
+          "options": [
+            "The attacker sends an email with an HTTP link; the browser upgrades to HTTPS, and the attacker presents a valid cert the browser trusts",
+            "The attacker tricks the user into visiting HTTP; the browser auto-upgrades to HTTPS, and the attacker presents an INVALID cert; the user clicks through the warning, enabling the attacker to see/Modify all traffic",
+            "The attacker uses DNS spoofing to redirect HTTPS traffic to their own server",
+            "The attacker exploits a bug in the HSTS header parsing to disable HSTS entirely"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "What happens when the user clicks 'Proceed' on a cert warning?",
+            "Does the attacker need the user to click through the warning for the attack to work?"
+          ],
+          "explanation": "The attack works because the browser upgrades the HTTP request to HTTPS automatically (based on the stored HSTS policy), and then connects to the server over HTTPS. If the server's certificate is invalid (self-signed, mismatched domain, expired), the browser shows a certificate warning. If the user clicks 'Proceed' or 'Continue anyway', the attacker who positioned themselves in the network (MITM) can present their own certificate, and the browser will accept it because the user has been trained to bypass warnings — effectively giving the attacker a cleartext TLS connection."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "cybergpt-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Test harness for CyberGPT (Playwright e2e suites). App itself is a Flask/vanilla-JS project.",
+  "type": "module",
+  "scripts": {
+    "test:e2e": "node tests/e2e_smoke.mjs",
+    "test:planner": "node tests/e2e_planner.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.0"
+  }
+}

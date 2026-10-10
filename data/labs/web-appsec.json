@@ -1,0 +1,156 @@
+{
+  "category": "Web AppSec",
+  "labs": [
+    {
+      "id": "web-01",
+      "lab_type": "soc",
+      "title": "SQL Injection — Blind-based Data Exfiltration",
+      "category": "Web AppSec",
+      "difficulty": "Intermediate",
+      "estimated_minutes": 14,
+      "mitre_attack": ["T1190.001 Software Vulnerability: SQL Injection", "T1059.001 Command and Scripting Interpreter: SQL"],
+      "learning_objectives": [
+        "Differentiate error-based vs blind SQL injection",
+        "Construct time-based payloads to extract data",
+        "Build a SIGMA rule for outbound connections from app tier"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A public-facing product catalog is vulnerable to SQL injection via the item_id parameter. The attacker uses blind-based techniques to extract the database version.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== REQUEST LOG ===\nGET /product?item_id=1 UNION SELECT null,version()--\n200 OK\nContent-Type: text/html; charset=utf-8\n<!DOCTYPE html><html>Database: production_db, Version: 8.0.33</html>\n=== WEB APP FIREWALL ===\nNo alerts triggered (request passed through with no known signatures)\n=== NETWORK FROM SERVER ===\nOutbound connection to attacker-controlled domain example-c2.xyz:443\n=== ENDPOINT EDR ===\nAlert: outbound connection to suspicious domain from web server process",
+      "iocs": ["1', 'UNION SELECT null,version()--", "example-c2.xyz", "production_db"],
+      "mitre_tactics": ["TA0001 Initial Access", "TA0009 Collection"],
+      "questions": [
+        {
+          "question": "What is the primary technique the attacker uses to exfiltrate data in this blind SQLi scenario?",
+          "options": [
+            "Error-based injection that forces the database to return stack traces with schema details",
+            "Time-based payloads that cause the database to pause execution and exfiltrate data via outbound connections",
+            "Boolean-based payloads that alter the HTML response length to infer true/false conditions",
+            "Stacked queries that append a new SELECT onto the original query to dump entire tables"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Look at the telemetry: does the server return an error message or a normal page?",
+            "What network connection was made from the server after the request?",
+            "How does blind SQLi differ from error-based SQLi in terms of data exfiltration?"
+          ],
+          "explanation": "NIST SP 800-61r2 / SANS PICERL — Detection: Blind SQL injection does not return database errors; instead the attacker forces the database to perform actions (like PAUSE or outbound network calls) that reveal data indirectly. Time-based payloads like WAITFOR DELAY or SNMP/HTTP calls to attacker-controlled domains are the hallmark. The key differentiator is that no error messages are generated — the attacker infers truth via timing or side-channels. Containment: parameterized queries / prepared statements on ALL user inputs, web application firewall with SQLi signature rules, and database monitoring for anomalous outbound connections from application-tier hosts."
+        },
+        {
+          "question": "Which of the following is the MITRE ATT&CK tactic for SQL injection used to extract data from a database?",
+          "options": [
+            "TA0005 Defense Evasion",
+            "TA0009 Collection",
+            "TA0004 Privilege Escalation",
+            "TA0011 Command & Control"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Collection is the phase where the adversary gathers data of interest to the attack goal.",
+            "Look at the ATT&CK matrix: which tactic covers data exfiltration and extraction?"
+          ],
+          "explanation": "TA0009 Collection covers the adversary's gathering of information of interest — in SQLi, this means extracting credentials, PII, or other sensitive data from the database. The full attack chain often spans Initial Access (finding the injection point) → Collection (exfiltrating data) → Exfiltration (removing the data from the environment)."
+        }
+      ]
+    },
+    {
+      "id": "web-02",
+      "lab_type": "soc",
+      "title": "Cross-Site Scripting (Reflected) — Cookie Theft",
+      "category": "Web AppSec",
+      "difficulty": "Beginner",
+      "estimated_minutes": 10,
+      "mitre_attack": ["T1059.001 Command and Scripting Interpreter: Reflected XSS", "T1419 Webinar: Session Hijacking"],
+      "learning_objectives": [
+        "Identify reflected XSS vectors in URL parameters",
+        "Understand how XSS can exfiltrate cookies via script",
+        "Build input sanitization and Content-Security-Policy mitigations"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A search endpoint reflects the user's query parameter without sanitization. An attacker crafts a malicious URL to steal the victim's session cookie.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== REQUEST ===\nGET /search?q=<script>alert(document.cookie)</script>\n200 OK\nResponse body includes: <span>Search results for: <script>alert(document.cookie)</script></span>\n=== VICTIM CLICKS LINK ===\nEmail: 'Your search results are ready: <a href=.../search?q=%3Cscript%3Ealert(document.cookie)%3C/script%3E'>View results</a>'\n=== INJECTION SITE ===\nThe script executes in the victim's browser, reads document.cookie, and sends it via fetch to attacker-controlled endpoint",
+      "iocs": ["<script>alert(document.cookie)</script>", "document.cookie", "fetch to attacker endpoint"],
+      "mitre_tactics": ["TA0001 Initial Access", "TA0006 Credential Access"],
+      "questions": [
+        {
+          "question": "Reflected XSS differs from stored XSS in which key way?",
+          "options": [
+            "Reflected XSS requires the victim to click a malicious link; stored XSS persists on the server",
+            "Reflected XSS can only execute alert() boxes; stored XSteals cookies",
+            "Reflected XSS is always blocked by X-Frame-Options; stored XSS is not",
+            "Reflected XSS does not require any user interaction"
+          ],
+          "correct_index": 0,
+          "hints": [
+            "Think about where the payload lives: server vs URL parameter.",
+            "How does the victim get exposed to each type?"
+          ],
+          "explanation": "Reflected XSS: the payload is reflected off the web server back to the user via a link (e.g., email, chat). The payload does NOT persist on the server. Stored XSS: the payload is permanently stored on the server (e.g., in a comment field, user profile) and served to every visitor. Both can lead to cookie theft, but the delivery mechanism differs."
+        },
+        {
+          "question": "Which security control would MOST effectively prevent reflected XSS from exfiltrating cookies?",
+          "options": [
+            "Input length limiting on all form fields",
+            "Content-Security-Policy with script-src 'self' and same-site cookie attributes",
+            "Disabling JavaScript entirely in the browser",
+            "Rate-limiting search requests per IP"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "How does CSP limit where scripts can run from?",
+            "How do SameSite cookies prevent cross-site leaking?"
+          ],
+          "explanation": "Content-Security-Policy (CSP) with script-src 'self' (and optionally strict-dynamic) prevents the execution of inline or untrusted scripts, which is what reflected XSS relies on. Combined with SameSite cookie attributes (Lax or Strict), cookies are not sent in cross-site context, thwarting the exfiltration fetch even if the script runs in a different site's context. Input length limits and rate-limiting are defense-in-depth but do not block the core XSS primitive."
+        }
+      ]
+    },
+    {
+      "id": "web-03",
+      "lab_type": "soc",
+      "title": "Broken Access Control — Insecure Direct Object Reference",
+      "category": "Web AppSec",
+      "difficulty": "Intermediate",
+      "estimated_minutes": 12,
+      "mitre_attack": ["T1040.001 Techniques: Unauthorized Access to Modifiable Files or Directories", "T1078 Valid Accounts"],
+      "learning_objectives": [
+        "Recognize IDOR when user-supplied identifiers access resources directly",
+        "Correlate access-log anomalies with user action sequences",
+        "Enforce server-side authorization checks on every resource endpoint"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A web application uses sequential invoice IDs in the URL. An analyst discovers she can view another user's invoice by changing the ID in the address bar.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== REQUEST LOG ===\nGET /api/invoices/12345\n200 OK\n{\n  \"invoice_id\": \"12345\",\n  \"amount\": 450.00,\n  \"customer_name\": \"Acme Corp\",\n  \"owner_email\": \"alice@acme.example\"\n}\n=== SAME ENDPOINT WITH DIFFERENT ID ===\nGET /api/invoices/67890\n200 OK\n{\n  \"invoice_id\": \"67890\",\n  \"amount\": 1280.00,\n  \"customer_name\": \"Beta Inc\",\n  \"owner_email\": \"bob@beta.example\"\n}\n=== ACCESS LOG ANALYSIS ===\nUser alice logged in at 09:00. After viewing invoice 12345 at 09:05, she manually changed the URL to invoice 67890 at 09:12.\nNo authorization check was performed server-side; the API returned the invoice data for any valid invoice number.",
+      "iocs": ["/api/invoices/12345", "/api/invoices/67890", "sequential invoice IDs"],
+      "mitre_tactics": ["TA0006 Credential Access", "TA0002 Reconnaissance"],
+      "questions": [
+        {
+          "question": "What is the root cause of this IDOR vulnerability?",
+          "options": [
+            "The API uses sequential invoice IDs that are guessable",
+            "The API performs no server-side authorization to verify the requesting user owns the requested invoice",
+            "The frontend does not hide the invoice ID from the user",
+            "The database does not encrypt invoice records"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Where should the authorization check live — client or server?",
+            "Even if the frontend hides IDs, what can an attacker do with curl or Postman?"
+          ],
+          "explanation": "The root cause is that the API endpoint accepts an invoice identifier and returns the corresponding record without verifying that the authenticated user has permission to view that specific invoice. This is the classic IDOR pattern: the user supplies an identifier (invoice ID) that the server uses to fetch data, but the server never checks 'does this user own this invoice?' Fixes: add a server-side authorization check (user_id match or role-based access), implement access-control lists, and audit every resource endpoint."
+        },
+        {
+          "question": "Which mitigation would most effectively prevent IDOR across the application?",
+          "options": [
+            "Obfuscate invoice IDs by using UUIDs or hashids instead of sequential numbers",
+            "Add a server-side authorization check that verifies the requesting user owns or has access to the requested resource",
+            "Hide invoice IDs in the frontend HTML and disable copy-paste on the table",
+            "Encrypt all invoice amounts at rest so the values are unreadable"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Does obfuscating the ID address the authorization gap?",
+            "Where should the access decision be enforced for it to be effective?"
+          ],
+          "explanation": "UUIDs/hashids make the ID harder to guess, but they do not fix the authorization flaw: an attacker who discovers (or is given) any valid ID can still access the resource if the server does not verify ownership. The definitive fix is a server-side check that the authenticated user is authorized to access the specific resource, regardless of how the ID is formatted."
+        }
+      ]
+    }
+  ]
+}

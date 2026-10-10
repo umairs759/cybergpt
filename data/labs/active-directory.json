@@ -1,0 +1,269 @@
+{
+  "category": "Active Directory",
+  "labs": [
+    {
+      "id": "soc-02",
+      "lab_type": "soc",
+      "title": "Authentication — RDP Password Spraying",
+      "category": "Active Directory",
+      "difficulty": "Beginner",
+      "estimated_minutes": 10,
+      "mitre_attack": ["T1110.003 Password Spraying", "T1078 Valid Accounts"],
+      "learning_objectives": [
+        "Differentiate password spraying from brute force in 4625 event patterns",
+        "Read Windows LogonType semantics (Type 10 = RDP)",
+        "Respond to a successful spray on a service account"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). The SIEM flagged a burst of failed logons followed by a single success on a jump server. Review the Windows Security event sequence.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== EVENT ID 4625 (Failed Logon) — burst ===\nLogonType: 10 (RemoteInteractive / RDP)\nStatus: 0xC000006A  (bad username or password)\nAccount: admin@contoso.example  SourceIP: 198.51.100.99  Time: 02:01:14\nAccount: administrator@contoso.example  SourceIP: 198.51.100.99  Time: 02:01:15\nAccount: svc_backup@contoso.example  SourceIP: 198.51.100.99  Time: 02:01:16\nAccount: jdoe@contoso.example  SourceIP: 198.51.100.99  Time: 02:01:17\n(+ 340 more 4625 events, same source IP, 1 password attempt per account)\n=== EVENT ID 4624 (Success) ===\nAccount: svc_backup@contoso.example  LogonType: 10  SourceIP: 198.51.100.99  Time: 02:04:52",
+      "iocs": ["198.51.100.99", "0xC000006A", "LogonType 10", "svc_backup", "EventID 4625 burst"],
+      "mitre_tactics": ["TA0006 Credential Access", "TA0007 Discovery"],
+      "questions": [
+        {
+          "question": "What attack pattern do these events demonstrate?",
+          "options": [
+            "A password spray: one common password across many accounts, then a 4624 LogonType 10 RDP success for svc_backup from the same source IP",
+            "A brute-force attack against a single service account using thousands of different passwords until the domain lockout threshold is finally triggered by the account policy",
+            "Normal user behavior with occasional mistyped passwords spread across the morning shift on the corporate jump server infrastructure by several staff",
+            "A Kerberos ticket-granting ticket (TGT) flood aimed at overwhelming the domain controller's authentication queue and causing a sustained denial of service condition"
+          ],
+          "correct_index": 0,
+          "hints": [
+            "Count the accounts vs. password attempts — is it many passwords on one user, or one password on many users?",
+            "What does status 0xC000006A mean?",
+            "Which account finally succeeded, and what LogonType is 10?"
+          ],
+          "explanation": "NIST SP 800-61r2 / SANS PICERL — Detection: Password spraying (TA0006) distributes a small set of common passwords across many accounts to stay under lockout thresholds. Signature: burst of 4625 (0xC000006A) with one attempt per username, single source IP, then a 4624 LogonType 10 (RDP) success. The compromised svc_backup account is a service account — high-value pivot target. Containment: block 198.51.100.99 at the perimeter, disable svc_backup, force password resets, hunt for lateral movement (4624 on other hosts). Prevention: enforce lockout policy, MFA on RDP, and monitor 4625 bursts with Sigma rules on SourceIP cardinality."
+        }
+      ]
+    },
+    {
+      "id": "soc-03",
+      "lab_type": "soc",
+      "title": "Active Directory — Kerberoasting Detection",
+      "category": "Active Directory",
+      "difficulty": "Advanced",
+      "estimated_minutes": 15,
+      "mitre_attack": ["T1558.003 Steal or Forge Kerberos Tickets: Kerberoasting"],
+      "learning_objectives": [
+        "Interpret Kerberos Event 4769 encryption-type anomalies",
+        "Explain why RC4 (0x17) tickets enable offline cracking",
+        "Harden service accounts with gMSA and AES-only policies"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A domain controller logged an anomalous spike in service ticket requests. Analyze the Kerberos telemetry for evidence of Kerberoasting.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== EVENT ID 4769 (Kerberos Service Ticket Request) ===\nAccount: jsmith@CONTOSO.EXAMPLE  (legitimate user)\nService: HTTP/websrv01.contoso.example\nTicket Encryption Type: 0x17 (RC4-HMAC)  <-- legacy/weak\nFailureCode: 0x0 (success)\n--- repeated 40+ times in 90 seconds across services ---\nService: MSSQLSvc/dbsrv01.contoso.example  EncType: 0x17 (RC4-HMAC)\nService: CIFS/filesrv01.contoso.example     EncType: 0x17 (RC4-HMAC)\n=== ANOMALY ===\nNormal baseline: AES (0x12/0x13) encryption for all TGS requests\nAttacker requests RC4 (0x17) to obtain crackable offline hashes\nProcess on jsmith workstation: Rubeus.exe (unsigned binary in %TEMP%)",
+      "iocs": ["Rubeus.exe", "0x17 (RC4-HMAC)", "EventID 4769 spike", "MSSQLSvc/dbsrv01.contoso.example", "HTTP/websrv01.contoso.example"],
+      "mitre_tactics": ["TA0006 Credential Access", "TA0007 Discovery"],
+      "questions": [
+        {
+          "question": "Why are the 4769 events with Ticket Encryption Type 0x17 (RC4-HMAC) a critical alert for Kerberoasting?",
+          "options": [
+            "RC4 tickets are larger and consume significant domain controller CPU during the service ticket request cycle, degrading authentication performance for all legitimate users in the domain",
+            "Kerberoasting requests RC4 tickets (0x17) because RC4 is crackable offline; the 4769 spike for SPNs from one user plus Rubeus.exe indicates hash extraction",
+            "0x17 means the service ticket was forged and never reached the domain controller for validation or logging purposes by the KDC",
+            "RC4 encryption indicates the user is authenticating from a non-domain device outside the corporate network perimeter firewall"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "What is the difference between 0x12/0x13 (AES) and 0x17 (RC4) for offline cracking?",
+            "Why would an attacker request RC4 explicitly instead of the default AES?",
+            "Look for the unsigned binary in %TEMP% — what tool is that?"
+          ],
+          "explanation": "NIST SP 800-61r2 / SANS PICERL — Detection: Kerberoasting (TA0006) abuses the Kerberos protocol: any domain user can request TGS for SPNs, and requesting RC4 (0x17) yields hashes crackable offline (vs. AES which is far stronger). Sigma detection: 4769 with TicketEncryptionType=0x17 where the account has no historical RC4 usage, plus high request volume. Rubeus.exe is the canonical Kerberoasting toolkit. Containment: isolate jsmith's workstation, capture the Rubeus binary and memory, rotate service account passwords (gMSA strongly recommended), disable RC4 in the domain (msDS-SupportedEncryptionTypes). Recovery: audit all SPNs and monitor for abnormal TGS patterns going forward."
+        }
+      ]
+    },
+    {
+      "id": "soc-04",
+      "lab_type": "soc",
+      "title": "Lateral Movement — Pass-the-Hash via PsExec",
+      "category": "Active Directory",
+      "difficulty": "Advanced",
+      "estimated_minutes": 15,
+      "mitre_attack": ["T1021.002 Remote Services: SMB/Windows Admin Shares", "T1550.002 Use Alternate Authentication Material: Pass the Hash"],
+      "learning_objectives": [
+        "Recognize the PsExec kill chain: ADMIN$ write, 7045 service install, NTLM type-3 logon",
+        "Correlate multiple weak signals into one lateral-movement detection",
+        "Apply LAPS and NTLM restriction mitigations"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). After an initial compromise, an attacker moved to a file server using PsExec. Review the endpoint and service telemetry.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== EVENT ID 7045 (New Service Installed) ===\nService: PSEXESVC  (display: PsExec Service)\nImagePath: C:\\Windows\\PSEXESVC.exe\nHostname: FSERVER01  Time: 03:12:44\n=== SMB SESSION (Event ID 5140 / network) ===\nSource: WKSTN-4471  ->  \\\\FSERVER01\\ADMIN$  (write access)\nFile written: ADMIN$\\PSEXESVC.exe\n=== AUTH (Event ID 4624) ===\nAccount: Administrator@CONTOSO.EXAMPLE  LogonType: 3 (Network)\nAuthenticationPackage: NTLM  (hash pass, not password)\nProcess: psexec.exe -accepteula -s -d \\\\FSERVER01 cmd.exe",
+      "iocs": ["PSEXESVC", "EventID 7045", "ADMIN$ share", "NTLM LogonType 3", "psexec.exe -accepteula"],
+      "mitre_tactics": ["TA0008 Lateral Movement", "TA0004 Privilege Escalation"],
+      "questions": [
+        {
+          "question": "What evidence confirms Pass-the-Hash (PtH) lateral movement via PsExec?",
+          "options": [
+            "A scheduled task was created on FSERVER01 by an administrator during a routine maintenance window last night for the nightly backups",
+            "The Administrator account logged on locally at the physical console using an interactive LogonType 2 session from the KVM switch",
+            "NTLM authentication (not a password), an ADMIN$ write, PSEXESVC install via Event ID 7045, and remote cmd.exe — a captured hash was reused",
+            "An antivirus definition update was pushed to FSERVER01 remotely by the endpoint management platform overnight via the administrative SMB share path with write access"
+          ],
+          "correct_index": 2,
+          "hints": [
+            "Which authentication package was used — Kerberos or NTLM? What does NTLM imply?",
+            "What share did the attacker write to, and why is ADMIN$ significant?",
+            "Event ID 7045 indicates what type of persistence/exec mechanism?"
+          ],
+          "explanation": "NIST SP 800-61r2 / SANS PICERL — Detection: Pass-the-Hash (TA0008) reuses a captured NTLM hash to authenticate to remote hosts without the plaintext password. PsExec writes PSEXESVC.exe to ADMIN$ (administrative share), installs it as a service (EID 7045), and spawns cmd.exe. Sigma: correlate EID 7045 (PSEXESVC) + ADMIN$ writes + NTLM 4624 LogonType 3 from a workstation. Containment: isolate WKSTN-4471 (initial hash theft vector) and FSERVER01, kill PSEXESVC, purge ADMIN$, force the Administrator hash rotation (password reset invalidates the hash). Recovery: hunt for other ADMIN$ writes and NTLM usage; migrate to Kerberos + constrained delegation and LAPS for local admin."
+        }
+      ]
+    },
+    {
+      "id": "ad-01",
+      "lab_type": "soc",
+      "title": "DCSync — Domain Replication Abuse",
+      "category": "Active Directory",
+      "difficulty": "Advanced",
+      "estimated_minutes": 15,
+      "mitre_attack": ["T1003.006 OS Credential Dumping: DCSync", "T1207 Rogue Domain Controller"],
+      "learning_objectives": [
+        "Interpret Directory Service replication events (4662) and their GUIDs",
+        "Understand which principals hold replication rights and why that is dangerous",
+        "Detect rogue DC behavior with objectVersion and nTDSDescriptor monitoring"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A suspicious replication request hit a domain controller from a workstation — not another DC. Determine what was extracted and what to do.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== EVENT ID 4662 (Directory Service Object Operation) ===\nSubject: contoso\\jsmith (workstation WKSTN-4471, NOT a DC)\nOperation: Object Access: Replicating Directory Changes (extended right)\nObject: krbtgt (dummy GUID 00000000-0000-0000-0000-000000000001)\nAdditional: {1131f6aa-9c07-11d1-...} DS-Replication-Get-Changes-All\n=== DC DIAGNOSTICS ===\nSourceDC: WKSTN-4471 claimed to sync from DC01 via MS-DRSR\nTool marker in traffic (SIMULATED): mimikatz lsadump::dcsync signature\n=== TIMELINE ===\n02:41 replication request from WKSTN-4471\n02:41 jsmith account earlier showed 4769 RC4 spike (see Kerberoasting drill)\n02:44 new Golden Ticket usage observed: TGT with 10-year lifetime for krbtgt",
+      "iocs": ["DS-Replication-Get-Changes-All from non-DC", "4662 krbtgt replication", "WKSTN-4471", "10-year TGT lifetime"],
+      "mitre_tactics": ["TA0006 Credential Access", "TA0008 Lateral Movement"],
+      "questions": [
+        {
+          "question": "What did the attacker most likely obtain, and why is it the highest-impact credential theft in AD?",
+          "options": [
+            "The jsmith password hash — critical but recoverable with a single reset",
+            "The KRBTGT account's password material, enabling forged Golden Tickets that survive full password resets until KRBTGT is rotated twice",
+            "The local administrator hash of WKSTN-4471, enabling lateral movement only",
+            "A copy of the NTDS.dit file, which is useless without the SYSTEM hive"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Which AD account signs ALL Kerberos tickets?",
+            "Why does resetting KRBTGT once sometimes not invalidate attacker tickets?",
+            "DCSync from a workstation means the attacker already had replication rights — what did they request?"
+          ],
+          "explanation": "The 4662 replication event targeting krbtgt from a non-DC principal means the attacker used directory-replication (DCSync, T1003.006) to pull the KRBTGT hash — the key that signs every TGT in the domain. With it they forge Golden Tickets of arbitrary lifetime (the observed 10-year TGT). KRBTGT is special: Microsoft requires rotating it TWICE (with old ticket expiry) to fully invalidate forged tickets, because the KDC keeps the previous hash valid. Response: isolate WKSTN-4471, revoke jsmith's replication rights (how did a user get them?), rotate KRBTGT twice per Microsoft guidance, hunt for the rights-change (likely via group/DACL modification earlier in the chain), and alert on all 4662 replication events from non-DC sources."
+        },
+        {
+          "question": "Which alerting rule catches this technique EARLIEST with the fewest false positives?",
+          "options": [
+            "Alert on EVERY 4662 event, since replication is rare in healthy domains",
+            "Alert only on 4662 replication-extended-right events where the source host is NOT an enrolled domain controller, tuned with the DC asset list",
+            "Alert when any TGT lifetime exceeds 10 years, as observed in the timeline",
+            "Alert on all Kerberos traffic in the domain, since the KDC logs everything"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Replication events are constant between real DCs — what distinguishes this event?",
+            "An asset inventory of legitimate DCs turns a noisy rule into a precise one.",
+            "10-year TGTs are the consequence, detected only at use — what fires at request time?"
+          ],
+          "explanation": "Inter-DC replication generates thousands of legitimate 4662 events daily; alerting on all of them drowns the SOC. The high-signal variant: 4662 with the DS-Replication-Get-Changes(-All) extended right GUID where the originating host is not in the domain-controllers asset group — DCs are few, well-inventoried, and stable, making the rule precise. Waiting for forged-ticket anomalies (10-year TGTs) detects the attack only after the attacker begins using it. This is why pairing detection with privilege hygiene (only DCs and tightly-audited accounts hold replication rights) matters."
+        }
+      ]
+    },
+    {
+      "id": "ad-02",
+      "lab_type": "soc",
+      "title": "gMSA Password Read by Unauthorized Host",
+      "category": "Active Directory",
+      "difficulty": "Intermediate",
+      "estimated_minutes": 12,
+      "mitre_attack": ["T1555 Credential Access: Credentials from Password Stores", "T1078 Valid Accounts"],
+      "learning_objectives": [
+        "Understand gMSA (Group Managed Service Accounts) password retrieval rights",
+        "Detect anomalous msDS-GroupMSAMembership reads via event 4768/4662",
+        "Configure PrincipalsAllowedToRetrieveManagedPassword correctly"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). The identity team noticed a service account (gMSA svc-sql) whose managed password was retrieved by a host that is not in the allowed principals list.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== EVENT 4768 (Kerberos TGT request) with PKINIT-less pre-auth for gMSA ===\nService: svc-sql$@CONTOSO.EXAMPLE\nClient: WKSTN-4471$ (machine account)\nNote: gMSA password retrieval is logged as event 4768/4769 with\n  ServiceName = svc-sql$ and msDS-GroupMSAMembership evaluation\n=== EVENT 4662 (object read) ===\nObject: CN=svc-sql,CN=Managed Service Accounts,DC=contoso,DC=example\nAttribute: msDS-ManagedPassword (retrieved)\nSubject: WKSTN-4471$\n=== GROUP POLICY STATE ===nmsDS-GroupMSAMembership for svc-sql: { SQLSRV-01$, SQLSRV-02$ } only\nWKSTN-4471$ was added to a nested group 'SQL-Admins' 20 minutes ago\n'SQL-Admins' was added to the gMSA PrincipalsAllowedToRetrieveManagedPassword 3 weeks ago (audit ticket #missing)",
+      "iocs": ["WKSTN-4471$ gMSA password read", "nested group 'SQL-Admins' privilege path", "missing change ticket"],
+      "mitre_tactics": ["TA0006 Credential Access", "TA0007 Discovery"],
+      "questions": [
+        {
+          "question": "How did WKSTN-4471$ manage to read the gMSA password when it is not directly listed in PrincipalsAllowedToRetrieveManagedPassword?",
+          "options": [
+            "It exploited a zero-day in the Kerberos KDC allowing arbitrary password retrieval",
+            "Group nesting: WKSTN-4471$ was added to 'SQL-Admins', which itself was (improperly) added to the gMSA's retrieval principals — creating an unintended privilege path",
+            "gMSA passwords can be read by any authenticated domain machine by design",
+            "It stole the password from the SQL server's LSASS memory using credential dumping"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Trace the membership chain: WKSTN-4471$ -> which group? -> which list?",
+            "Does the gMSA evaluate direct members only, or nested group membership?",
+            "The 4662 event succeeded — so some right allowed it. Which change created that right?"
+          ],
+          "explanation": "gMSA retrieval rights are evaluated through group membership, including NESTED groups. The audit gap is the three-week-old change that added 'SQL-Admins' to PrincipalsAllowedToRetrieveManagedPassword without a ticket — combined with yesterday's addition of a workstation to that group, this produced an unintended transitive path: WKSTN-4471$ -> SQL-Admins -> gMSA retrieval. This is a classic AD privilege-path (privilege escalation via unmaintained group nesting). Response: remove WKSTN-4471$ from SQL-Admins, re-scope the gMSA principal list to explicit server objects only, rotate the gMSA (invalidate retrieved material by forcing password roll), and audit every change to retrieval-principal lists with mandatory tickets."
+        },
+        {
+          "question": "Which is the strongest hardening change to prevent this class of gMSA abuse?",
+          "options": [
+            "Populate PrincipalsAllowedToRetrieveManagedPassword with explicit computer objects (SQLSRV-01$, SQLSRV-02$) rather than groups, and alert on every modification of that attribute",
+            "Disable all gMSA accounts and revert to cleartext service passwords stored in scripts",
+            "Place gMSA objects in a dedicated OU with no delegation, but leave the principal list as-is",
+            "Rotate gMSA passwords manually every day using a domain admin account"
+          ],
+          "correct_index": 0,
+          "hints": [
+            "Groups add indirection — what does listing explicit server objects eliminate?",
+            "Which single attribute controls retrieval, and how would you know it changed?",
+            "Reverting to static passwords is strictly worse."
+          ],
+          "explanation": "The defense is precision plus monitoring: explicit computer objects in PrincipalsAllowedToRetrieveManagedPassword remove the indirection that made this abuse possible (no group to sneak into), and alerting on attribute modifications closes the audit gap that let the three-week-old change slip through. Static passwords in scripts are a massive downgrade; daily manual rotation defeats the automatic 240-day gMSA rolling and inflates domain-admin usage; hiding the OU does nothing about a rights problem."
+        }
+      ]
+    },
+    {
+      "id": "ad-03",
+      "lab_type": "soc",
+      "title": "AD CS Certificate Template Abuse (ESC1-style)",
+      "category": "Active Directory",
+      "difficulty": "Advanced",
+      "estimated_minutes": 16,
+      "mitre_attack": ["T1649 Steal or Forge Authentication Certificates", "T1552 Unsecured Credentials"],
+      "learning_objectives": [
+        "Identify dangerous AD CS certificate template flags and enrollment rights",
+        "Detect certificate-based authentication anomalies (NTLM-less logons)",
+        "Remediate misconfigured templates with least-privilege enrollment"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A red-team report found that a certificate template lets any domain user enroll as ANY identity — including domain admins. Review the template configuration and the observed enrollment.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== CERTIFICATE TEMPLATE (from certutil -dstemplate, summarized) ===\nTemplate: WebServer2K6\nSchema version: 1\nEnrollment rights: Domain Users (ALL domain users!)\nCA certificate: issued by CORP-CA-01\nSubject name: SUPPLIED IN REQUEST ( csr: attacker chooses )\nENROLLEE SUPPLIES SUBJECT: enabled\nCertificate purposes: Server Authentication + Client Authentication\n=== OBSERVED ENROLLMENT (CA logs) ===\nRequestID 8842: requester CONTOSO\\jsmith (workstation), subject CN=administrator,CN=Users,DC=contoso,DC=example\nIssued: yes — cert with Client Authentication EKU valid 1 year\n=== POST-ISSUE AUTH ===nEvent 4768 PKINIT: certificate-based logon as administrator from WKSTN-4471 (no password, no hash used)",
+      "iocs": ["WebServer2K6 template", "Enrollee Supplies Subject", "Domain Users enrollment", "RequestID 8842"],
+      "mitre_tactics": ["TA0006 Credential Access", "TA0004 Privilege Escalation", "TA0007 Discovery"],
+      "questions": [
+        {
+          "question": "Which template configuration makes 'WebServer2K6' an escalation primitive for ANY domain user?",
+          "options": [
+            "The 1-year certificate validity period, which is too long for security",
+            "'Enrollee Supplies Subject' enabled + Client Authentication EKU + enrollment rights granted to Domain Users — anyone can request a cert naming ANY identity (including admins)",
+            "Schema version 1 templates are always insecure and must be deleted",
+            "Issuing server-auth certs is dangerous because web servers hold service credentials"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Who chooses the subject CN when 'Enrollee Supplies Subject' is on?",
+            "What restricts enrollment today — and does 'Domain Users' satisfy that restriction?",
+            "What can you do with a client-auth cert whose subject is CN=administrator?"
+          ],
+          "explanation": "The combination is the ESC1 pattern: (1) Enrollee Supplies Subject — the requester writes the identity into the CSR; (2) Client Authentication EKU — the cert authenticates to Kerberos (PKINIT)/TLS; (3) enrollment rights for Domain Users — everyone can request it. Any user can therefore mint a certificate claiming to be administrator and log on without password or hash — and the cert survives password resets until revoked/expired. Remediation: remove Domain Users from enrollment rights, disable Enrollee Supplies Subject (or strip the client-auth EKU), revoke certificate 8842, audit all issued certs from that template, and monitor CA logs for subject/requester mismatches."
+        },
+        {
+          "question": "The attacker used PKINIT with the forged-identity certificate. Why is certificate-based access HARDER to contain than password-based compromise?",
+          "options": [
+            "Certificates cannot be revoked at all — revocation is an advisory field clients may ignore",
+            "Because the cert authenticates as administrator independent of the administrator's password, resets do not help — containment requires revoking the certificate itself AND template remediation",
+            "It is not harder: resetting the administrator password invalidates the certificate automatically",
+            "PKINIT traffic is encrypted, so the SOC cannot even detect its use"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "What credential does the cert replace? (not the password)",
+            "Which concrete action kills a certificate? Where is that action performed?",
+            "Even after revocation — what must change so no NEW cert can be minted?"
+          ],
+          "explanation": "A client-auth certificate is its own credential: the KDC validates the cert chain, not the user's password, so password rotation is useless. Containment is two-layered: (a) revoke the issued cert (and publish updated CRL/AIA so relying parties see it — revocation does not propagate instantly), and (b) fix the template so no replacement cert can be enrolled. Detection visibility exists: 4768/4769 PKINIT events and CA database logs show cert-based auth and subject/requester mismatches, enabling rules like 'client-cert logon where requester differs from authenticated identity'."
+        }
+      ]
+    }
+  ]
+}

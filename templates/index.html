@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="description" content="CyberGPT — Defensive Cyber Intelligence & SOC Operations Simulator. Phishing triage labs, password hardening audits, SOC incident drills, and AI SOC mentorship." />
+  <meta name="theme-color" content="#0B0B0C" />
+  <title>CyberGPT — Defensive Cyber Intelligence &amp; SOC Operations Simulator</title>
+
+  <!-- Google Fonts: Inter (UI) + JetBrains Mono (telemetry & code) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            obsidian:  '#0B0B0C', // Main workspace background
+            surface:   '#101011', // Sidebar / matte surface
+            panel:     '#171717', // Elevated card surface
+            composer:  '#212124', // Composer input surface
+            edge:      '#2C2C2E', // 1px crisp border
+            ink:       '#F5F5F5', // Primary text
+            muted:     '#A1A1AA', // Secondary text
+            faint:     '#71717A', // Muted / placeholder
+            emerald:   '#00F5A0', // Telemetry accent
+            cyan:      '#38BDF8', // Telemetry accent
+            accent:    '#3B82F6', // Interactive accent
+            accent2:   '#00D2FF', // Interactive accent
+          },
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+          },
+          boxShadow: {
+            'focus-ring': '0 0 0 3px rgba(59,130,246,0.18)',
+            'composer':   '0 8px 32px rgba(0,0,0,0.45)',
+            'send-glow':  '0 0 16px rgba(59,130,246,0.45)',
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Markdown renderer for assistant responses -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <!-- CyberGPT design system -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+
+<body class="bg-obsidian text-ink font-sans antialiased">
+
+<div class="app-shell flex h-[100dvh] overflow-hidden">
+
+  <!-- =====================================================================
+       LEFT SIDEBAR — brand, navigation, recent operations, session controls
+       ===================================================================== -->
+  <div id="sidebar-scrim" class="sidebar-scrim" aria-hidden="true"></div>
+
+  <aside id="sidebar" class="sidebar" aria-label="Workspace navigation">
+    <!-- A. Brand area -->
+    <div class="sidebar-brand">
+      <div class="brand-badge" aria-hidden="true">
+        <i data-lucide="shield" class="brand-shield"></i>
+      </div>
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-1.5">
+          <h1 class="brand-title text-[15px] font-bold tracking-tight">CyberGPT</h1>
+          <span class="brand-tag">ENTERPRISE</span>
+        </div>
+        <p class="brand-sub">SOC Operations Simulator</p>
+      </div>
+      <button id="sidebar-close" class="icon-btn md:hidden" title="Close navigation" aria-label="Close navigation">
+        <i data-lucide="x" class="h-4 w-4"></i>
+      </button>
+    </div>
+
+    <!-- B. New chat -->
+    <div class="px-3 pt-3">
+      <button id="new-chat-btn" class="new-chat-btn" type="button">
+        <i data-lucide="plus" class="h-4 w-4"></i>
+        <span>New Chat</span>
+        <kbd class="kbd" aria-hidden="true">Ctrl K</kbd>
+      </button>
+    </div>
+
+    <!-- C. Navigation modules -->
+    <nav class="sidebar-scroll" aria-label="Platform modules">
+      <p class="nav-section-label">Modules</p>
+      <ul class="nav-list" id="nav-list">
+        <li>
+          <button class="nav-tab active" data-tab="chat" role="tab" aria-selected="true">
+            <i data-lucide="message-square" class="nav-ico"></i>
+            <span class="nav-label">Chat Copilot</span>
+          </button>
+        </li>
+        <li>
+          <button class="nav-tab" data-tab="phishing" role="tab" aria-selected="false">
+            <i data-lucide="fish" class="nav-ico"></i>
+            <span class="nav-label">Phishing Triage Lab</span>
+          </button>
+        </li>
+        <li>
+          <button class="nav-tab" data-tab="password" role="tab" aria-selected="false">
+            <i data-lucide="key-round" class="nav-ico"></i>
+            <span class="nav-label">Password Hardening Audit</span>
+          </button>
+        </li>
+        <li>
+          <button class="nav-tab" data-tab="soc" role="tab" aria-selected="false">
+            <i data-lucide="radar" class="nav-ico"></i>
+            <span class="nav-label">SOC Incident Drills</span>
+          </button>
+        </li>
+        <li>
+          <button class="nav-tab" data-tab="study-planner" role="tab" aria-selected="false">
+            <i data-lucide="calendar" class="nav-ico"></i>
+            <span class="nav-label">Study Planner</span>
+          </button>
+        </li>
+        <li>
+          <button class="nav-tab" data-tab="cheatsheets" role="tab" aria-selected="false">
+            <i data-lucide="book-open" class="nav-ico"></i>
+            <span class="nav-label">Security Cheat Sheets</span>
+          </button>
+        </li>
+      </ul>
+
+      <!-- D. Recent operations & history -->
+      <div class="recent-block">
+        <div class="recent-head">
+          <p class="nav-section-label">Recent Operations</p>
+          <span id="recent-count" class="recent-count">0</span>
+        </div>
+        <ul class="recent-list" id="recent-list">
+          <li class="recent-empty" id="recent-empty">No operations recorded this session.</li>
+        </ul>
+      </div>
+    </nav>
+
+    <!-- E. Bottom: session controls, cluster status, profile -->
+    <div class="sidebar-foot">
+      <button id="flush-btn" class="flush-btn" type="button">
+        <i data-lucide="trash-2" class="h-3.5 w-3.5"></i>
+        <span>Flush Session Memory</span>
+      </button>
+
+      <div class="status-pill" role="status">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span class="status-text">Defense Cluster Operational</span>
+      </div>
+
+      <div class="profile">
+        <div class="profile-avatar" aria-hidden="true">
+          <i data-lucide="user" class="h-3.5 w-3.5"></i>
+        </div>
+        <div class="min-w-0 flex-1">
+          <p class="profile-name">SOC Analyst</p>
+          <p class="profile-role">Tier&nbsp;<span id="profile-tier">Balanced</span></p>
+        </div>
+        <span id="session-chip" class="session-chip" title="Session identifier">—</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- =====================================================================
+       MAIN COLUMN
+       ===================================================================== -->
+  <div class="flex min-w-0 flex-1 flex-col">
+
+    <!-- TOP HEADER (56px) -->
+    <header class="app-header">
+      <button id="sidebar-toggle" class="icon-btn" title="Toggle sidebar" aria-label="Toggle sidebar" aria-expanded="true">
+        <i data-lucide="panel-left" class="h-4 w-4"></i>
+      </button>
+
+      <nav class="breadcrumb" aria-label="Breadcrumb">
+        <span class="crumb-root">CyberGPT</span>
+        <i data-lucide="chevron-right" class="crumb-sep" aria-hidden="true"></i>
+        <span class="crumb-current" id="crumb-current">Chat Copilot</span>
+      </nav>
+
+      <div class="header-right">
+        <div id="tier-switcher" class="tier-group" role="group" aria-label="Model response tier">
+          <button class="tier-btn" data-tier="flash" title="2-3 lines · ~2-3s response">
+            <i data-lucide="zap" class="h-3 w-3"></i>
+            <span class="tier-name">Flash</span>
+            <span class="tier-note">2-3 lines</span>
+          </button>
+          <button class="tier-btn active" data-tier="balanced" title="4-7 lines · mechanics + detection rules">
+            <i data-lucide="shield-check" class="h-3 w-3"></i>
+            <span class="tier-name">Balanced</span>
+            <span class="tier-note">4-7 lines</span>
+          </button>
+          <button class="tier-btn" data-tier="pro" title="13-20 lines · deep architecture & IoCs">
+            <i data-lucide="brain" class="h-3 w-3"></i>
+            <span class="tier-name">Pro</span>
+            <span class="tier-note">13-20 lines</span>
+          </button>
+        </div>
+        <div class="mode-switcher" role="group" aria-label="Chat mode toggle">
+          <button class="mode-pill mode-pill-cyber" aria-pressed="true" data-mode="cyber">
+            <span>🛡️ Cyber</span>
+          </button>
+          <button class="mode-pill mode-pill-normal" data-mode="normal">
+            <span>💬 Normal</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- MODULE CONTENT -->
+    <main class="app-main" id="app-main">
+
+      <!-- ================= MODULE 1: CHAT COPILOT ================= -->
+      <section class="tab-view active" id="tab-chat" role="tabpanel" aria-label="Chat Copilot">
+        <div class="chat-shell">
+          <div class="chat-scroll" id="chat-scroll">
+            <div class="chat-inner">
+
+              <!-- Empty state / minimalist hero -->
+              <div class="chat-empty" id="chat-empty">
+                <h2 class="hero-title">How can I assist your defense operations today?</h2>
+                <div id="empty-composer-slot" class="empty-composer-slot"></div>
+                <div class="chip-row" id="quick-pills">
+                  <button class="quick-pill" type="button" data-query="Explain Zero Trust Architecture">Explain Zero Trust Architecture</button>
+                  <button class="quick-pill" type="button" data-query="How to detect Pass-the-Hash in Event Logs?">How to detect Pass-the-Hash in Event Logs?</button>
+                  <button class="quick-pill" type="button" data-query="Compare SPF, DKIM, and DMARC">Compare SPF, DKIM, and DMARC</button>
+                  <button class="quick-pill" type="button" data-query="Triage Time-based Blind SQL Injection">Triage Time-based Blind SQL Injection</button>
+                </div>
+              </div>
+
+              <!-- Conversation view -->
+              <div class="chat-log" id="chat-log" aria-live="polite" aria-label="Conversation"></div>
+
+            </div>
+          </div>
+
+          <!-- Sticky composer dock -->
+          <div class="chat-dock" id="composer-dock">
+            <div class="chat-inner">
+              <div id="dock-slot" class="dock-slot"></div>
+              <p class="dock-note" id="chat-meta">
+                <i data-lucide="cpu" class="note-ico"></i>
+                <span id="chat-meta-text">Balanced tier · NVIDIA NIM failover chain</span>
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= MODULE 2: PHISHING TRIAGE LAB ================= -->
+      <section class="tab-view" id="tab-phishing" role="tabpanel" aria-label="Phishing Triage Lab">
+        <div class="lab-head">
+          <div class="min-w-0">
+            <h2 class="module-title">Phishing Triage Lab</h2>
+            <p class="module-sub">Header forensics, BEC, quishing &amp; OAuth consent abuse</p>
+          </div>
+          <div class="scenario-count" id="phishing-count">Loading…</div>
+        </div>
+        <div class="filter-row" id="phishing-filters" role="group" aria-label="Phishing category filters"></div>
+        <div class="scenario-grid" id="phishing-grid"></div>
+      </section>
+
+      <!-- ================= MODULE 3: PASSWORD HARDENING AUDIT ================= -->
+      <section class="tab-view" id="tab-password" role="tabpanel" aria-label="Password Hardening Audit">
+        <div class="lab-head">
+          <div class="min-w-0">
+            <h2 class="module-title">Password Complexity &amp; Hardening</h2>
+            <p class="module-sub">Deterministic Shannon entropy · audit runs on click only</p>
+          </div>
+          <i data-lucide="fingerprint" class="head-ico"></i>
+        </div>
+
+        <div class="pw-grid">
+          <div class="flex flex-col gap-4">
+            <div class="field-card">
+              <label for="password-field" class="field-label">Password to Audit</label>
+              <div class="pw-input-row">
+                <div class="pw-input-wrap">
+                  <i data-lucide="lock" class="pw-input-ico"></i>
+                  <input type="password" id="password-field" placeholder="e.g. ZacPaul0890" autocomplete="off"
+                         aria-label="Password to audit" class="pw-input" />
+                </div>
+                <button type="button" id="toggle-pw-visibility" class="icon-btn" title="Show / hide password" aria-label="Show or hide password">
+                  <i data-lucide="eye" class="h-4 w-4"></i>
+                </button>
+              </div>
+
+              <div class="entropy-preview">
+                <div class="entropy-row">
+                  <span>Client-side Shannon entropy</span>
+                  <strong id="entropy-live" class="entropy-value">0.00 bits</strong>
+                </div>
+                <div class="entropy-meter" aria-hidden="true">
+                  <div class="entropy-fill" id="entropy-fill"></div>
+                </div>
+              </div>
+
+              <button type="button" id="audit-btn" class="audit-btn">
+                <i data-lucide="scan-search" class="h-4 w-4"></i>
+                <span>Audit Password</span>
+              </button>
+              <p class="rate-note">
+                <i data-lucide="shield-alert" class="note-ico" aria-hidden="true"></i>
+                Analysis is click-only — no keystroke listeners, so no rate-limit exposure.
+              </p>
+            </div>
+          </div>
+
+          <div class="password-result" id="password-result" aria-live="polite">
+            <div class="result-placeholder">
+              <i data-lucide="info" class="h-5 w-5 text-cyan"></i>
+              <p>Enter a candidate password and select <strong>Audit Password</strong> to compare original versus hardened entropy, run RockYou corpus checks, estimate offline crack time, and review Argon2id / bcrypt storage guidance.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= MODULE 4: SOC INCIDENT DRILLS ================= -->
+      <section class="tab-view" id="tab-soc" role="tabpanel" aria-label="SOC Incident Drills">
+        <div class="lab-head">
+          <div class="min-w-0">
+            <h2 class="module-title">SOC Incident Drills</h2>
+            <p class="module-sub">Endpoint, Active Directory, Web AppSec &amp; Cloud telemetry</p>
+          </div>
+          <div class="scenario-count" id="soc-count">Loading…</div>
+        </div>
+        <div class="filter-row" id="soc-filters" role="group" aria-label="SOC drill category filters"></div>
+        <div class="scenario-grid" id="soc-grid"></div>
+      </section>
+
+      <!-- ================= MODULE 5: SECURITY CHEAT SHEETS ================= -->
+      <section class="tab-view" id="tab-cheatsheets" role="tabpanel" aria-label="Security Cheat Sheets">
+        <div class="lab-head">
+          <div class="min-w-0">
+            <h2 class="module-title">Multi-Tier Reference Matrices</h2>
+            <p class="module-sub">Ports · Linux · OWASP · Event IDs · AD attacks · Volatility</p>
+          </div>
+          <i data-lucide="table" class="head-ico"></i>
+        </div>
+        <div class="tier-group wide" id="cheat-tiers" role="group" aria-label="Cheat sheet tier">
+          <button class="tier-btn active" data-cheat-tier="beginner">
+            <i data-lucide="sprout" class="h-3 w-3"></i><span class="tier-name">Beginner</span>
+          </button>
+          <button class="tier-btn" data-cheat-tier="intermediate">
+            <i data-lucide="shield-check" class="h-3 w-3"></i><span class="tier-name">Intermediate</span>
+          </button>
+          <button class="tier-btn" data-cheat-tier="advanced">
+            <i data-lucide="brain" class="h-3 w-3"></i><span class="tier-name">Advanced</span>
+          </button>
+        </div>
+        <div id="cheat-container" class="cheat-container" aria-live="polite"></div>
+      </section>
+
+      <!-- ================= MODULE 6: STUDY PLANNER ================= -->
+      <section class="tab-view" id="tab-study-planner" role="tabpanel" aria-label="Study Planner">
+        <div class="lab-head">
+          <div class="min-w-0">
+            <h2 class="module-title">Study Planner</h2>
+            <p class="module-sub">Plan your learning journey and track progress</p>
+          </div>
+        </div>
+
+        <div class="planner-controls">
+          <div class="form-row">
+            <label for="planner-date" class="form-label">Date</label>
+            <input type="date" id="planner-date" class="form-input">
+
+            <label for="planner-target" class="form-label">Target Labs</label>
+            <input type="number" id="planner-target" class="form-input" min="1" value="3">
+
+            <button id="planner-autoassign" class="btn-secondary">Auto-assign by difficulty</button>
+          </div>
+
+          <div class="form-row">
+            <label for="planner-note" class="form-label">Note</label>
+            <textarea id="planner-note" class="form-input" rows="2" placeholder="Optional notes about your study plan"></textarea>
+          </div>
+        </div>
+
+        <div class="planner-tabs">
+          <button class="planner-tab active" data-view="today">Today</button>
+          <button class="planner-tab" data-view="tomorrow">Tomorrow</button>
+          <button class="planner-tab" data-view="this-week">This Week</button>
+        </div>
+
+        <div id="planner-tasks"></div>
+
+        <div class="planner-summary">
+          <div class="summary-streak">
+            <span>Streak:</span>
+            <span id="planner-streak">0</span> days
+          </div>
+          <div class="summary-xp">
+            <span>XP:</span>
+            <span id="planner-xp">0</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="app-footer">
+      <div class="foot-inner">
+        <span class="foot-brand">CyberGPT v2.0 — Defensive Cyber Intelligence &amp; SOC Operations Simulator</span>
+        <span class="foot-meta">NIST SP 800-61r2 / SANS PICERL · Argon2id m=64MB t=3 p=4 · All identifiers simulated</span>
+      </div>
+      <div class="foot-disclaimer">
+        <i data-lucide="shield-check" class="foot-disc-ico" aria-hidden="true"></i>
+        <span>All scenarios are fictional and for educational use only.</span>
+      </div>
+    </footer>
+  </div>
+</div>
+
+<!-- =====================================================================
+     MESSAGE COMPOSER TEMPLATE (moved between the empty-state slot and the
+     sticky dock so a single instance never has a duplicate ID)
+     ===================================================================== -->
+<template id="composer-template">
+  <form class="composer" id="chat-form" autocomplete="off">
+    <input type="file" id="telemetry-file" class="hidden" aria-hidden="true" tabindex="-1" />
+
+    <button type="button" id="telemetry-btn" class="composer-attach" title="Attach telemetry artifact" aria-label="Attach telemetry artifact">
+      <i data-lucide="paperclip" class="h-4 w-4"></i>
+    </button>
+
+    <div class="composer-field">
+      <textarea id="chat-input" class="composer-input" rows="1" placeholder="Ask the SOC copilot… (Enter to send, Shift+Enter for a new line)"
+                aria-label="Message the SOC copilot"></textarea>
+      <span class="composer-attachment" id="composer-attachment" hidden>
+        <i data-lucide="file-text" class="h-3 w-3"></i>
+        <span id="composer-attachment-name"></span>
+        <button type="button" id="composer-attachment-clear" class="attachment-clear" aria-label="Remove attachment">
+          <i data-lucide="x" class="h-3 w-3"></i>
+        </button>
+      </span>
+    </div>
+
+    <button type="submit" id="chat-send" class="composer-send" disabled title="Send message" aria-label="Send message">
+      <i data-lucide="arrow-up" class="btn-icon h-4 w-4"></i>
+      <span class="btn-spinner hidden" aria-hidden="true"></span>
+    </button>
+  </form>
+</template>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
+
+<!-- ================= MODULE 7: CYBER ERROR ANALYZER ================= -->
+      <section class="tab-view" id="tab-analyzer" role="tabpanel" aria-label="Cyber Error Analyzer">
+        <div class="lab-head">
+          <div class="min-w-0">
+            <h2 class="module-title">Cyber Error Analyzer</h2>
+            <p class="module-sub">Analyze error telemetry, detect patterns, and redact secrets</p>
+          </div>
+        </div>
+
+        <div class="analyzer-form">
+          <div class="form-row">
+            <label for="analyzer-evidence" class="form-label">Evidence (telemetry, error messages, logs)</label>
+            <textarea id="analyzer-evidence" class="form-input" rows="5" placeholder="Paste Sysmon, EDR, or security telemetry here..."></textarea>
+          </div>
+
+          <div class="form-row">
+            <label for="analyzer-environment" class="form-label">Environment</label>
+            <select id="analyzer-environment" class="form-input">
+              <option value="">Select environment</option>
+              <option value="windows">Windows</option>
+              <option value="linux">Linux</option>
+              <option value="macos">macOS</option>
+              <option value="cloud">Cloud / AWS</option>
+              <option value="network">Network / DNS / TLS</option>
+            </select>
+          </div>
+
+          <div class="form-row">
+            <label for="analyzer-problem-type" class="form-label">Problem Type</label>
+            <select id="analyzer-problem-type" class="form-input">
+              <option value="Auto-detect">Auto-detect</option>
+              <option value="Terminal/CLI error">Terminal/CLI error</option>
+              <option value="Python/application code error">Python/application code error</option>
+              <option value="Web application security finding">Web application security finding</option>
+              <option value="HTTP/API error">HTTP/API error</option>
+              <option value="Network/DNS/TLS">Network/DNS/TLS</option>
+              <option value="Linux system error">Linux system error</option>
+              <option value="Windows/Active Directory event">Windows/Active Directory event</option>
+              <option value="SIEM/EDR alert">SIEM/EDR alert</option>
+              <option value="Suspicious email/phishing evidence">Suspicious email/phishing evidence</option>
+              <option value="Cloud/IAM">Cloud/IAM</option>
+              <option value="Database error">Database error</option>
+              <option value="Docker/deployment">Docker/deployment</option>
+              <option value="Suspicious payload (analysis only)">Suspicious payload (analysis only)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="analyzer-actions">
+          <button id="analyze-btn" class="analyze-btn">Analyze Error</button>
+          <span id="analyze-spinner" class="hidden">Analyzing…</span>
+        </div>
+
+        <div id="analyzer-result" class="analyzer-result" aria-live="polite"></div>
+      </section>

@@ -1,0 +1,155 @@
+{
+  "category": "Logs/SIEM",
+  "labs": [
+    {
+      "id": "siem-01",
+      "lab_type": "soc",
+      "title": "SIEM Alert Correlation — Lateral Movement Detection",
+      "category": "Logs/SIEM",
+      "difficulty": "Advanced",
+      "estimated_minutes": 18,
+      "mitre_attack": ["T1021.001 Remote Services: SSH", "T1078 Valid Accounts"],
+      "learning_objectives": [
+        "Correlate authentication, process creation, and network connection events across time windows",
+        "Build a Sigma rule for lateral movement via SSH from compromised host",
+        "Prioritize alerts by kill-chain phase and blast radius"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A SIEM receives logs from 50 endpoints. The security analyst observes a pattern: a successful SSH login from an unusual external IP, followed by process creation on a second host within 3 minutes, and then an outbound connection to a known C2 domain. The task is to correlate these events and confirm lateral movement.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== EVENT SOURCES ===\n- Windows Security Event Logs (4624, 4688, 1)\n- Linux auth.log\n- Zeek/Zeek HTTP logs\n- Cisco NetFlow\n=== CORRELATION RULE (Sigma) ===\ntitle: Potential Lateral Movement via SSH\nlogsource:\n  product: windows\n  service: security\ndetection:\n  selection_ssh:\n    EventID: 4624\n    LogonType: 10  # RDP, but attacker SSH via RDP gateway\n  selection_process:\n    EventID: 4688\n    ChannelCommandLine|contains: \"ssh\"\n  selection_time:\n    TimeID|within_seconds_of: [selection_ssh, 180]  # within 3 min\n  condition: selection_ssh and selection_process and selection_time\n  timeframe: 48 hours\n=== ALERTS GENERATED ==\n2 alerts in 48h: Host A (10.0.1.22) -> Host B (10.0.1.45)\n- SSH login from 203.0.113.88 at 02:13:44\n- Process creation: sshd -> at 02:13:57\n- Outbound C2 connection at 02:14:05 to attacker-domain.xyz",
+      "iocs": ["203.0.113.88", "10.0.1.22", "10.0.1.45", "attacker-domain.xyz"],
+      "mitre_tactics": ["TA0008 Lateral Movement", "TA0006 Credential Access"],
+      "questions": [
+        {
+          "question": "What is the key indicator that this is lateral movement rather than two independent login events?",
+          "options": [
+            "The two hosts are on the same subnet 10.0.1.x",
+            "The time gap between the SSH login and process creation is within 3 minutes",
+            "The source IP 203.0.113.88 is the same for both events",
+            "All of the above"
+          ],
+          "correct_index": 3,
+          "hints": [
+            "Think about what each piece of evidence contributes.",
+            "How does the time proximity help distinguish lateral movement from coincidence?"
+          ],
+          "explanation": "All of the above contribute to the lateral movement assessment: same source IP ties the events together, same subnet suggests the attacker moved from one internal host to another, and the 3-minute time gap is consistent with an attacker's quick pivot after initial access. Together, these form a coherent chain of evidence that this is a deliberate lateral move, not random unrelated logins."
+        },
+        {
+          "question": "Which Sigma condition would most precisely capture this lateral movement pattern while reducing false positives from legitimate admin SSH sessions?",
+          "options": [
+            "selection_ssh and selection_process and selection_time",
+            "selection_ssh or selection_process",
+            "selection_time only",
+            "selection_ssh only"
+          ],
+          "correct_index": 0,
+          "hints": [
+            "Which combination ensures all three key signals are present?",
+            "What would 'or' introduce in terms of false positives?"
+          ],
+          "explanation": "The 'and' condition ensures that all three signals — a successful SSH logon, a process creation involving SSH, and the time proximity within 3 minutes — must be present for the rule to fire. This precise conjunction dramatically reduces false positives compared to using 'or' (which would fire on any single one of those events, such as a legitimate admin SSH session without lateral movement) or using only one condition."
+        }
+      ]
+    },
+    {
+      "id": "siem-02",
+      "lab_type": "soc",
+      "title": "Log Ingestion Failure — Missing Fields Detection",
+      "category": "Logs/SIEM",
+      "difficulty": "Beginner",
+      "estimated_minutes": 10,
+      "mitre_attack": ["T1070.004 Indicator Removal: Windows Event Logging", "T1068 Exploitation for Privilege Escalation"],
+      "learning_objectives": [
+        "Identify common fields expected in normalized SIEM log entries",
+        "Detect log ingestion failures caused by field mismatches",
+        "Build validation rules to flag incomplete log sources"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A new endpoint security product begins forwarding event logs to the organization's SIEM. After deployment, the analyst notices that several critical fields (EventID, SourceIP, TargetUser) are missing from the incoming events, making correlation rules unreliable.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== EXPECTED LOG SCHEMA ===\n{ \"timestamp\": \"2026-10-09T14:22:07.441\", \"event_id\": 1, \"source_ip\": \"192.0.2.44\", \"target_user\": \"dev.user\", \"process_name\": \"powershell.exe\" }\n=== ACTUAL INCOMING LOGS ===\n{ \"ts\": \"2026-10-09T14:22:07.441\", \"code\": 1, \"ip\": \"192.0.2.44\", \"user\": \"dev.user\", \"proc\": \"powershell.exe\" }\n=== FIELD MAPPING ISSUE ==\nThe endpoint product uses different field names (ts, code, ip, user, proc) than the SIEM expects (timestamp, event_id, source_ip, target_user, process_name).\n=== IMPACT ==\nSigma rules that reference event_id, source_ip, or target_user fail to match; correlation rules time out; threat hunting queries return no results.",
+      "iocs": ["field name mismatch", "ts", "code", "ip", "user", "proc"],
+      "mitre_tactics": ["TA0007 Discovery", "TA0004 Privilege Escalation"],
+      "questions": [
+        {
+          "question": "What is the root cause of the missing fields in the SIEM?",
+          "options": [
+            "The SIEM is configured to drop events with unknown field names",
+            "The endpoint security product uses different field names than the SIEM's expected schema",
+            "The network firewall is blocking the field names from arriving",
+            "The log events are being truncated at the source"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Compare the expected schema with the actual incoming logs.",
+            "Do the field names match between the two?"
+          ],
+          "explanation": "The endpoint security product is sending logs with its own field naming convention (ts, code, ip, user, proc) rather than the SIEM's expected schema (timestamp, event_id, source_ip, target_user, process_name). This is a common issue when integrating new log sources — the field names must be mapped or normalized before the SIEM can index and search them effectively. Without this mapping, any detection rules referencing the expected field names will silently fail to match."
+        },
+        {
+          "question": "Which approach would most effectively resolve the field mapping issue across all future log sources?",
+          "options": [
+            "Configure the SIEM to accept any field name and automatically extract known fields",
+            "Require all log forwarders to map their fields to the SIEM's normalized schema before ingestion",
+            "Drop all incoming logs that do not match the exact expected schema",
+            "Manually rename fields in the SIEM after every ingestion event"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "What is the sustainable, long-term solution for new log sources?",
+            "Does auto-extraction handle all possible field name variations?"
+          ],
+          "explanation": "The most effective approach is to require all log forwarders (endpoint agents, network devices, cloud services) to map their native field names to the SIEM's normalized schema before sending the logs. This ensures consistency across all data sources and makes detection rules, correlation queries, and threat hunting reliable. Auto-extraction by the SIEM can help but is fragile and may miss edge cases; dropping logs reduces visibility; manual renaming does not scale."
+        }
+      ]
+    },
+    {
+      "id": "siem-03",
+      "lab_type": "soc",
+      "title": "Anomalous Log Volume Spike — False Positive Assessment",
+      "category": "Logs/SIEM",
+      "difficulty": "Intermediate",
+      "estimated_minutes": 12,
+      "mitre_attack": ["T1070.001 Indicator Removal: File Deletion", "T1070.004 Indicator Removal: Windows Event Logging"],
+      "learning_objectives": [
+        " correlate log volume trends with known maintenance windows",
+        "Distinguish legitimate traffic spikes from exfiltration or sabotage",
+        "Build audit-quality logging dashboards with baseline thresholds"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). The SOC dashboard shows a 5x spike in Security Event ID 4624 (successful logons) from 50 to 250 logons per minute. The analyst must determine if this is a false positive (e.g., a batch job, power-on storm) or a potential brute-force attack.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== EVENT LOG PATTERN (10-minute windows) ===\nWindow 00:00–00:10: 52 logons (normal business hours)\nWindow 00:10–00:20: 248 logons (unusual surge)\nWindow 00:20–00:30: 51 logons (back to normal)\nWindow 00:30–00:40: 49 logons (back to normal)\n=== KNOWN CAUSE ==\nPower-on storm: 120 workstations booted simultaneously at 00:10 after a planned maintenance window\n=== NETWORK CONTEXT ==\nAll 120 workstations are on the same subnet, authenticating to the same AD domain\n=== AFTER INVESTIGATION ==\nNo credential theft observed; the spike was entirely due to the power-on storm. Alert closed with note for future baseline tuning.",
+      "iocs": ["52 → 250 logons/min", "120 workstations power-on", "EventID 4624"],
+      "mitre_tactics": ["TA0007 Discovery"],
+      "questions": [
+        {
+          "question": "What is the most important contextual information for determining whether the log volume spike is malicious or legitimate?",
+          "options": [
+            "The absolute number of logons per minute (250 vs 50)",
+            "Whether the spike correlates with a known maintenance window or infrastructure change",
+            "The source IP geographic distribution of the logons",
+            "Whether the logon attempts use credential failures first"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "How can you distinguish a planned event from an attack?",
+            "What correlation should the analyst check first?"
+          ],
+          "explanation": "The most important contextual information is whether the spike correlates with a known maintenance window, power-on event, software deployment, or other legitimate infrastructure change. In this scenario, the 120 workstation power-on storm perfectly explains the 5x increase in logons. Without this context, the analyst might incorrectly escalate the alert as a brute-force attack. Baselining and change-management documentation are essential for rapid false-positive assessment."
+        },
+        {
+          "question": "Which Sigma rule condition would help reduce false positives from routine workstation power-on storms when detecting brute-force attempts?",
+          "options": [
+            "Detect EventID 4624 with success=true and count > 100 in 10 minutes",
+            "Detect EventID 4624 with success=true AND EventID 4625 with status=0xC000006A in the same 10-minute window from distinct source IPs",
+            "Detect EventID 4624 only",
+            "Detect EventID 4625 only"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "What distinguishes a brute-force attack from successful logons alone?",
+            "Why would checking for failed logons (4625) help?"
+          ],
+          "explanation": "A brute-force or password-spraying attack typically generates many FAILED logon events (4625) with status 0xC000006A, often from distinct source IPs or against distinct accounts. Legitimate power-on storms produce SUCCESSFUL logons (4624) without corresponding failures. By requiring both 4624 and 4625 in the same window from distinct IPs, the Sigma rule captures the attack pattern while filtering out normal successful logon surges."
+        }
+      ]
+    }
+  ]
+}

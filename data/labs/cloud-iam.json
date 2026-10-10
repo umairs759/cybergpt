@@ -1,0 +1,155 @@
+{
+  "category": "Cloud/IAM",
+  "labs": [
+    {
+      "id": "cloud-01",
+      "lab_type": "soc",
+      "title": "Misconfigured S3 Bucket — Public Read Access",
+      "category": "Cloud/IAM",
+      "difficulty": "Beginner",
+      "estimated_minutes": 10,
+      "mitre_attack": ["T1570.001 Lateral Movement: Cloud Container Storage", "T1021.001 Remote Services: Remote Cloud Storage"],
+      "learning_objectives": [
+        "Identify public-read bucket policies in AWS S3",
+        "Exploit (simulated) public access to list bucket contents",
+        "Remediate by restricting bucket policies to specific accounts"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A developer sets an S3 bucket policy to allow public read access for static website hosting, but the policy inadvertently grants read access to all objects including sensitive logs.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== AWS S3 BUCKET POLICY ===\n{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [{\n    \"Effect\": \"Allow\",\n    \"Principal\": \"*\",\n    \"Action\": [\"s3:GetObject\"],\n    \"Resource\": \"arn:aws:s3:::company-bucket/*\"\n  }]\n}\n=== ATTEMPTED ACCESS ===\naws s3 ls s3://company-bucket/\n200 OK\n contents: \n  - prod-logs/access-2026-10-01.log (SENSITIVE)\n  - images/logo.png (public)\n  - database-export.sql (SENSITIVE)\n=== SECURITY HUB ALERT ===\nBucket company-bucket has public read access — 12 sensitive objects exposed",
+      "iocs": ["company-bucket", "prod-logs/access-2026-10-01.log", "database-export.sql"],
+      "mitre_tactics": ["TA0001 Initial Access", "TA0009 Collection"],
+      "questions": [
+        {
+          "question": "What is the primary misconfiguration that allows public access to the S3 bucket?",
+          "options": [
+            "The bucket has no encryption at rest enabled",
+            "The bucket policy grants s3:GetObject to Principal \"*\" (all users)",
+            "The bucket allows public ACLs but not policy-based access",
+            "The bucket policy references an invalid ARN syntax"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Look at the Statement Effect and Principal in the policy.",
+            "Who does '*' include in AWS IAM policies?"
+          ],
+          "explanation": "The bucket policy's Statement has Effect: Allow and Principal: \"*\", which means any person on the internet can match this statement. The Action s3:GetObject on Resource arn:aws:s3:::company-bucket/* grants read access to every object in the bucket. This is the classic misconfiguration that leads to sensitive data exposure."
+        },
+        {
+          "question": "Which remediation would most effectively restrict access to only authorized users?",
+          "options": [
+            "Enable S3 bucket encryption with KMS customer-managed key",
+            "Replace the bucket policy with one that limits Principal to specific AWS account IDs or IAM roles",
+            "Set the bucket ACL to private and enable versioning",
+            "Move the bucket to a different AWS region"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "How can you scope the Principal to only trusted accounts?",
+            "Does changing the region affect the bucket policy?"
+          ],
+          "explanation": "Restricting the Principal in the bucket policy to specific AWS account IDs, IAM roles, or federated user groups ensures that only authorized identities can match the Allow statement. This replaces the wildcard \"*\" with a precise set of permitted principals. Encryption, ACL changes, and region migration do not address the core policy-based access control issue."
+        }
+      ]
+    },
+    {
+      "id": "cloud-02",
+      "lab_type": "soc",
+      "title": "IAM Overprivileged User — Admin Console Access",
+      "category": "Cloud/IAM",
+      "difficulty": "Intermediate",
+      "estimated_minutes": 12,
+      "mitre_attack": ["T1078 Valid Accounts: Cloud IAM", "T1098.001 Account Manipulation: Cloud Account"],
+      "learning_objectives": [
+        "Identify overprivileged IAM policies that grant unnecessary admin rights",
+        "Simulate privilege escalation from a standard user to admin console",
+        "Build least-privilege policy and access-review mitigations"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A marketing analyst user account has an IAM policy that accidentally includes full administrator permissions for the cloud console. The analyst can now view and modify all resources across the organization.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== IAM POLICY ATTACHED TO user: marketing-analyst ===\n{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [{\n    \"Effect\": \"Allow\",\n    \"Action\": [\n      \"ec2:Describe*\",\n      \"s3:GetObject\",\n      \"iam:*\",  ← overprivileged\n      \"cloudformation:*\",\n      \"route53:*\"\n    ],\n    \"Resource\": \"*\"\n  }]\n}\n=== ACTIONS PERFORMED ===\n1. Started an on-demand EC2 c5.9xlarge instance (cost: $4.50/hr)\n2. Attached a new EBS volume to the instance\n3. Created a new IAM user with password login\n4. Modified the organization's root account email address\n5. Downloaded the support case template containing corporate secrets",
+      "iocs": ["iam:* action", "ec2:Describe*", "root account email modification"],
+      "mitre_tactics": ["TA0006 Credential Access", "TA0002 Reconnaissance"],
+      "questions": [
+        {
+          "question": "Which single action in the overprivileged policy enables the analyst to perform ALL listed actions?",
+          "options": [
+            "ec2:Describe*",
+            "iam:*",
+            "s3:GetObject",
+            "route53:*"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "Which action uses the wildcard '*' for both Action and Resource?",
+            "What can an IAM administrator do that a standard user cannot?"
+          ],
+          "explanation": "The iam:* action grants full control over IAM entities: create, modify, and delete users, groups, roles, and policies. This single permission allows the analyst to reassign permissions, escalate her own privileges, create new users with passwords, and ultimately Take Over the account's identity infrastructure. The other actions (ec2:Describe*, s3:GetObject, route53:*) are read-only or limited in scope."
+        },
+        {
+          "question": "Which mitigation would most effectively prevent privilege escalation via overprivileged IAM policies?",
+          "options": [
+            "Enable MFA for all IAM users and rotate access keys every 30 days",
+            "Implement least-privilege policies using AWS IAM Access Analyzer and regularly review policy permissions",
+            "Move all IAM users into a single group with no admin permissions",
+            "Disable the AWS Management Console and require all work via CLI only"
+          ],
+          "correct_index": 1,
+          "hints": [
+            "How can you detect which permissions are actually used versus granted?",
+            "What tool specifically identifies unused IAM permissions?"
+          ],
+          "explanation": "AWS IAM Access Analyzer evaluates IAM policies and identifies permissions that are not used in a specified period. By creating least-privilege policies based on actual usage data and conducting regular access reviews, organizations can eliminate overprivileged assignments. MFA and key rotation are important hygiene but do not reduce the permission set itself. A single group with no admin permissions would break productivity."
+        }
+      ]
+    },
+    {
+      "id": "cloud-03",
+      "lab_type": "soc",
+      "title": "OAuth 2.0 Token Scope Abuse — Mail.ReadWrite",
+      "category": "Cloud/IAM",
+      "difficulty": "Advanced",
+      "estimated_minutes": 15,
+      "mitre_attack": ["T1528.001 OAuth 2.0 Authorization Code: Client impersonation", "T1098.005 Account Manipulation: OAuth 2.0 Token Theft"],
+      "learning_objectives": [
+        "Interpret OAuth consent grant scopes and their real-world impact",
+        "Simulate token abuse with Mail.ReadWrite scope",
+        "Harden tenant consent workflows and app verification"
+      ],
+      "scenario": "SIMULATED TRAINING EXAMPLE (fictional). A user authorizes a third-party 'document viewer' app with OAuth scopes. The app abuses Mail.ReadWrite to access and forward all mailbox content.",
+      "telemetry": "=== SIMULATED TRAINING EXAMPLE - NOT REAL TELEMETRY ===\n=== OAUTH CONSENT GRANT ===\nApp: 'DocuView Pro' (unverified publisher)\nScopes granted: Mail.ReadWrite, Calendars.ReadWrite, User.Read\n=== SUBSEQUENT ACTIVITY (5 min later) ===\nGraph API: GET /me/messages — 1,500 messages enumerated\nGraph API: POST /me/sendMail — BEC email sent to external domain\nGraph API: DELETE /me/messages — mass deletion of evidence\n=== APP REGISTRATION ==-\nAppId: 00000000-0000-0000-0000-000000000000\nRedirect URI: https://docuview-pro.example/callback\n=== MITIGATION ===\nRevoked grant in Entra ID; rotated all service principal secrets; enabled consent admin approval",
+      "iocs": ["00000000-0000-0000-0000-000000000000", "Mail.ReadWrite", "DocuView Pro"],
+      "mitre_tactics": ["TA0001 Initial Access", "TA0006 Credential Access"],
+      "questions": [
+        {
+          "question": "Why is the Mail.ReadWrite scope particularly dangerous when granted to an unverified app?",
+          "options": [
+            "It allows the app to read and modify ALL mailboxes in the tenant without the user's credentials",
+            "It grants the app the ability to reset the user's password directly",
+            "It gives the admin console access for the entire organization",
+            "It disables multi-factor authentication for the user's account"
+          ],
+          "correct_index": 0,
+          "hints": [
+            "What can you do with read/write access to all mailboxes?",
+            "Does Mail.ReadWrite require the user's password to operate?"
+          ],
+          "explanation": "Mail.ReadWrite scope allows the app to read and send email in ANY mailbox within the Microsoft 365 tenant, not just the user's own mailbox. Once consented (especially by a non-admin user who may not understand the scope), the app can enumerate, read, forward, or delete messages across the organization. This is a prime BEC (Business Email Compromise) vector because the attacker can read incoming financial emails and send fraudulent replies without ever knowing the user's password."
+        },
+        {
+          "question": "Which control would most effectively prevent unauthorized OAuth consent grants at the tenant level?",
+          "options": [
+            "Require admin approval for all OAuth app registrations (OAuth2.0 / OpenID Connect federation)",
+            "Educate users to never grant consent to any app",
+            "Remove all Mail.ReadWrite scope from the organization's scope whitelist",
+            "Set a session timeout of 15 minutes for all interactive logins"
+          ],
+          "correct_index": 0,
+          "hints": [
+            "Which control prevents the app from being granted consent in the first place?",
+            "Does educating users stop a determined social-engineering attack?"
+          ],
+          "explanation": "Tenant-wide admin approval for OAuth app registrations means no app can be published or granted consent across the organization without an authorized administrator reviewing the app's requested scopes and publisher identity. This blocks unverified apps (like 'DocuView Pro' with a dummy GUID) from receiving any consent at all. User education is valuable but unreliable; removing a scope from a whitelist does not prevent other dangerous scopes from being granted; and session timeouts do not affect persistent OAuth grants."
+        }
+      ]
+    }
+  ]
+}
