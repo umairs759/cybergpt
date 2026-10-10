@@ -135,6 +135,8 @@ class LLMResponse:
     latency_ms: float
     success: bool
     error: Optional[str] = None
+    action: Optional[str] = None  # e.g., "switch_mode"
+    suggested_labs: Optional[List[Dict]] = None  # up to 2 real lab objects from catalog
 
     def to_dict(self) -> Dict[str, Any]:
         """Clean JSON contract: {"success", "reply", "model_used", "tokens_used", ...}."""
@@ -146,6 +148,8 @@ class LLMResponse:
             "tier": self.tier.value,
             "latency_ms": round(self.latency_ms, 1),
             "error": self.error,
+            "action": self.action,
+            "suggested_labs": self.suggested_labs,
             "tokens": {
                 "prompt": self.token_usage.prompt_tokens,
                 "completion": self.token_usage.completion_tokens,
@@ -619,7 +623,7 @@ class LLMService:
         return plan
 
     async def chat(
-        self, messages: List[Dict[str, str]], tier: ModelTier = ModelTier.BALANCED
+        self, messages: List[Dict[str, str]], tier: ModelTier = ModelTier.BALANCED, mode: str = "cyber"
     ) -> LLMResponse:
         """Main entry point with NVIDIA NIM model + key failover chain.
 
@@ -636,12 +640,17 @@ class LLMService:
         """
         tier = _coerce_tier(tier)
         sanitized = sanitize_messages(messages)
-
+        
         # ---- Intent Classification ----
         # Classify user intent before reaching the LLM failover chain.
         # This allows certain query types to bypass the model entirely,
         # ensuring consistent, factual responses and avoiding template misuse.
-        intent_result = _classify_intent(messages[0]["content"] if messages else "")
+        first_user_msg = ""
+        for msg in messages:
+            if msg.get("role") == "user":
+                first_user_msg = msg.get("content", "")
+                break
+        intent_result = _classify_intent(first_user_msg, mode)
 
         # Handle META_IDENTITY: return direct natural response
         if intent_result.intent == Intent.META_IDENTITY:
@@ -653,6 +662,7 @@ class LLMService:
                 token_usage=TokenUsage(),
                 latency_ms=0,
                 success=True,
+                suggested_labs=intent_result.suggested_labs or [],
             )
 
         # Handle CONCEPTS: plain definition + why it matters + core components
@@ -670,17 +680,92 @@ class LLMService:
                 clean = re.sub(r'\b(?:cmd\.exe|powershell|bash):?\s*', '', clean)
                 # Ensure no inline bracketed lab strings remain
                 clean = re.sub(r'\[.*?\]', '', clean).strip()
-                # Build concept response: definition + why it matters + core components
-                concept_text = clean or "Zero Trust"
+                
+                # Build dynamic concept response based on the query
+                lower = clean.lower()
                 lines = []
-                # Definition line
-                lines.append(f"Zero Trust is a security concept that assumes no user or device should be trusted by default, whether inside or outside the network perimeter.")
-                # Why it matters
-                lines.append(f"It matters because traditional perimeter-based security cannot protect against lateral movement and insider threats; Zero Trust enforces continuous verification.")
-                # Core components
-                lines.append(f"Core components include: explicit verification of identity and context, least-privilege access, and continuous monitoring and validation of all assets.")
-                # Real-world example (no specific Event IDs unless requested)
-                lines.append(f"Example: Instead of automatically allowing all traffic from the corporate network, Zero Trust requires device health checks and user authentication before granting access to each application service.")
+                
+                if "what is cyber security" in lower or "what is information security" in lower:
+                    lines.append(f"Cybersecurity (or Information Security) is the practice of protecting systems, networks, and data from digital attacks, unauthorized access, and damage.")
+                    lines.append(f"It matters because modern organizations rely on digital assets — breaches cause financial loss, reputational harm, regulatory fines, and operational disruption.")
+                    lines.append(f"Core domains: Network Security (firewalls, IDS/IPS, segmentation), Endpoint Security (EDR, patching, hardening), Application Security (SAST/DAST, WAF, secure coding), Identity & Access (MFA, PAM, Zero Trust), Cloud Security (CSPM, CIEM, workload protection), Data Security (encryption, DLP, classification), Incident Response (detection, containment, recovery).")
+                    lines.append(f"Frameworks: NIST CSF, ISO 27001, CIS Controls, MITRE ATT&CK. These provide structure for building and measuring a security program.")
+                elif "zero trust" in lower:
+                    lines.append(f"Zero Trust is a security concept that assumes no user or device should be trusted by default, whether inside or outside the network perimeter.")
+                    lines.append(f"It matters because traditional perimeter-based security cannot protect against lateral movement and insider threats; Zero Trust enforces continuous verification.")
+                    lines.append(f"Core components include: explicit verification of identity and context, least-privilege access, and continuous monitoring and validation of all assets.")
+                    lines.append(f"Example: Instead of automatically allowing all traffic from the corporate network, Zero Trust requires device health checks and user authentication before granting access to each application service.")
+                elif "cia triad" in lower or "confidentiality integrity availability" in lower:
+                    lines.append(f"The CIA Triad is the foundational model for information security: Confidentiality, Integrity, and Availability.")
+                    lines.append(f"Confidentiality ensures only authorized access; Integrity protects data from unauthorized modification; Availability guarantees systems are accessible when needed.")
+                    lines.append(f"All security controls map to at least one of these three pillars — a control failing to address any is incomplete.")
+                    lines.append(f"Example: Encryption protects Confidentiality; Hashing + signatures protect Integrity; Redundancy + backups protect Availability.")
+                elif "defense in depth" in lower:
+                    lines.append(f"Defense in Depth is a layered security strategy where multiple defensive mechanisms protect assets, so if one layer fails, others still provide protection.")
+                    lines.append(f"It matters because no single control is perfect — perimeter, network, host, application, and data layers each need their own controls.")
+                    lines.append(f"Layers: Perimeter (firewall) → Network (IDS/IPS, segmentation) → Endpoint (EDR, patching) → Application (WAF, input validation) → Data (encryption, DLP).")
+                    lines.append(f"Example: An attacker breaches the firewall but is caught by EDR, then blocked by application WAF, and data remains encrypted.")
+                elif "pass the hash" in lower or "pth" in lower:
+                    lines.append(f"Pass-the-Hash (PtH) is a lateral movement technique where an attacker reuses a captured NTLM hash to authenticate to remote systems without knowing the plaintext password.")
+                    lines.append(f"It matters because NTLM hashes can be extracted from LSASS memory (Mimikatz, sekurlsa) and reused — the password itself is never needed.")
+                    lines.append(f"Key indicators: Event ID 4624 LogonType 3 (Network) with AuthenticationPackage NTLM; PsExec service (PSEXESVC) installs via Event ID 7045; ADMIN$ share writes.")
+                    lines.append(f"Mitigation: Enforce Kerberos (disable NTLM where possible), use LAPS for local admin passwords, restrict ADMIN$ access, monitor for NTLM use in privileged contexts.")
+                elif "kerberoasting" in lower:
+                    lines.append(f"Kerberoasting is a credential access technique where any domain user requests Kerberos service tickets (TGS) for SPNs and requests weak RC4 (0x17) encryption to crack the hash offline.")
+                    lines.append(f"It matters because service account hashes (especially with RC4) can be cracked in hours/days, yielding plaintext passwords for privileged accounts.")
+                    lines.append(f"Key indicators: Event ID 4769 spike with TicketEncryptionType 0x17 (RC4-HMAC); tools like Rubeus.exe in memory; high TGS request volume from single user.")
+                    lines.append(f"Mitigation: Disable RC4 in domain (msDS-SupportedEncryptionTypes), use gMSAs for service accounts, enforce AES-only, monitor 4769 anomalies.")
+                elif "golden ticket" in lower:
+                    lines.append(f"Golden Ticket is a forged Kerberos TGT (Ticket Granting Ticket) created using the KRBTGT account's hash, allowing unlimited-lifetime authentication as any user in the domain.")
+                    lines.append(f"It matters because the KRBTGT hash signs ALL TGTs — compromising it means total domain compromise that survives password resets.")
+                    lines.append(f"Key indicators: 4624 LogonType 3 with 10-year TGT lifetime; 4768 TGT requests for non-existent users; Mimikatz 'kerberos::golden' artifacts.")
+                    lines.append(f"Mitigation: Rotate KRBTGT password TWICE (per Microsoft guidance), monitor for anomalous TGT lifetimes, restrict KRBTGT replication rights.")
+                elif "dcsync" in lower:
+                    lines.append(f"DCSync is a credential dumping technique where an attacker with replication rights (DS-Replication-Get-Changes-All) uses the directory replication protocol (MS-DRSR) to pull password hashes from a domain controller — without being a DC.")
+                    lines.append(f"It matters because any principal with replication rights can extract all domain credentials, including KRBTGT, enabling Golden Tickets.")
+                    lines.append(f"Key indicators: Event ID 4662 with DS-Replication-Get-Changes-All GUID on a non-DC host; Mimikatz 'lsadump::dcsync' signature in traffic.")
+                    lines.append(f"Mitigation: Restrict replication rights to DCs only, audit 4662 events from non-DCs, rotate KRBTGT, use gMSAs.")
+                elif "sql injection" in lower or "sqli" in lower:
+                    lines.append(f"SQL Injection (SQLi) occurs when untrusted user input is concatenated into SQL queries without parameterization, allowing attackers to manipulate query logic and extract/modify/destroy data.")
+                    lines.append(f"It matters because databases often hold the most sensitive data (PII, credentials, financial records) and SQLi is a top OWASP risk.")
+                    lines.append(f"Types: Error-based (DB errors leak schema), Union-based (append SELECTs), Blind/Time-based (boolean/time oracles), Stacked (multiple statements).")
+                    lines.append(f"Mitigation: ALWAYS use parameterized queries / prepared statements; never concatenate strings; least-privilege DB accounts; WAF rules.")
+                elif "xss" in lower or "cross site scripting" in lower:
+                    lines.append(f"Cross-Site Scripting (XSS) occurs when an application reflects or stores untrusted user input without sanitization, executing attacker-controlled JavaScript in victims' browsers.")
+                    lines.append(f"It matters because XSS can steal session cookies, perform actions as the user, deface sites, and deliver malware — all bypassing same-origin policy.")
+                    lines.append(f"Types: Reflected (payload in URL/params), Stored (payload in DB), DOM-based (client-side only).")
+                    lines.append(f"Mitigation: Content-Security-Policy (script-src 'self'), output encoding per context, HttpOnly+Secure+SameSite cookies, input validation.")
+                elif "csrf" in lower or "cross site request forgery" in lower:
+                    lines.append(f"Cross-Site Request Forgery (CSRF) tricks a user's browser into making authenticated requests to a target site without their consent, exploiting the browser's automatic cookie sending.")
+                    lines.append(f"It matters because state-changing actions (password change, fund transfer, admin actions) can be executed by the attacker via the victim's session.")
+                    lines.append(f"Mitigation: SameSite cookies (Lax/Strict), CSRF tokens (synchronizer pattern), double-submit cookies, custom headers (X-Requested-With).")
+                elif "ssrf" in lower or "server side request forgery" in lower:
+                    lines.append(f"Server-Side Request Forgery (SSRF) occurs when an attacker induces the server to make HTTP requests to internal/arbitrary destinations, bypassing firewall rules.")
+                    lines.append(f"It matters because SSRF can access cloud metadata services (AWS IMDS, GCP metadata), internal APIs, and file:/// schemas — leading to credential theft and RCE.")
+                    lines.append(f"Mitigation: Allow-list egress URLs, block private IP ranges (169.254.169.254, 10.x, 192.168.x), validate user-supplied URLs, use egress proxies.")
+                elif "password spray" in lower:
+                    lines.append(f"Password Spraying is a credential access attack where a single common password is tried against many accounts, staying under per-account lockout thresholds.")
+                    lines.append(f"It matters because it evades traditional brute-force detection (which looks for many failures on ONE account) and often succeeds with common passwords like 'Spring2024!' or 'Password1'.")
+                    lines.append(f"Key indicators: Event ID 4625 burst with status 0xC000006A, one attempt per account, single source IP; followed by 4624 LogonType 10 (RDP) success.")
+                    lines.append(f"Mitigation: Enforce MFA on all remote access, monitor 4625 SourceIP cardinality, ban common passwords, use Azure AD Password Protection.")
+                elif "credential stuffing" in lower:
+                    lines.append(f"Credential Stuffing is the automated injection of breached username/password pairs across many sites, exploiting password reuse.")
+                    lines.append(f"It matters because billions of credentials are available from past breaches; automation tools (Sentry MBA, OpenBullet) can test millions per hour.")
+                    lines.append(f"Mitigation: MFA (blocks login even with valid creds), rate-limiting, bot detection (reCAPTCHA, device fingerprinting), breach monitoring (HaveIBeenPwned API).")
+                elif "entropy" in lower or "shannon" in lower:
+                    lines.append(f"Shannon Entropy measures the unpredictability of a password in bits: H = -Σ(p × log2 p) for each character's frequency. Higher entropy = harder to guess.")
+                    lines.append(f"It matters because entropy directly correlates to crack time: 28 bits = instant, 40 bits = hours, 55 bits = years, 75+ bits = effectively unbreakable offline.")
+                    lines.append(f"Example: 'Password123!' has low entropy (common word + pattern); 'CorrectHorseBatteryStaple' has high entropy (4 random words).")
+                    lines.append(f"Tool: CyberGPT Password Audit computes Shannon + charset entropy, penalizes patterns, estimates Argon2id/bcrypt crack times.")
+                elif "argon2id" in lower or "bcrypt" in lower:
+                    lines.append(f"Argon2id and bcrypt are memory-hard password hashing algorithms designed to resist GPU/ASIC cracking by requiring significant memory and CPU per guess.")
+                    lines.append(f"Argon2id (OWASP recommended): m=64MB, t=3, p=4 — slows attackers to ~1,000 guesses/sec vs billions for SHA-256.")
+                    lines.append(f"bcrypt (min cost 12): ~10,000 guesses/sec — slower than SHA but faster than Argon2id; widely supported.")
+                    lines.append(f"Never use MD5, SHA-1, SHA-256, or plaintext for passwords — they are not designed for credential storage.")
+                else:
+                    # Generic fallback for unknown concepts
+                    lines.append(f"'{clean}' is a cybersecurity concept. For detailed explanations, try: 'explain zero trust', 'explain pass the hash', 'explain kerberoasting', 'what is sql injection', 'what is xss', 'explain cia triad', 'what is defense in depth', 'explain password spraying', 'what is entropy', 'explain argon2id'.")
+                
                 clean_text = " ".join(lines)
                 return LLMResponse(
                     content=clean_text,
@@ -689,10 +774,24 @@ class LLMService:
                     token_usage=TokenUsage(),
                     latency_ms=0,
                     success=True,
+                    suggested_labs=intent_result.suggested_labs or [],
                 )
             # Fall through to LLM if concept handling not matched
 
-        # Handle INCIDENT_TRIAGE: use structured template
+        # Handle OFF_TOPIC in Cyber mode: return 1-line + action chip
+        if intent_result.intent == Intent.OFF_TOPIC:
+            return LLMResponse(
+                content=intent_result.direct_response or "I'm CyberGPT in Cyber mode — I specialize in defensive cybersecurity. For general topics, please switch to Normal mode.",
+                model_used="cybergpt-offtopic",
+                tier=tier,
+                token_usage=TokenUsage(),
+                latency_ms=0,
+                success=True,
+                action=intent_result.action,
+                suggested_labs=[],
+            )
+
+        # Handle INCIDENT_TRIAGE: use structured template, continue to normal flow
         if intent_result.intent == Intent.INCIDENT_TRIAGE:
             # Use the Balanced tier prompt which includes Event IDs / IoCs / SIGMA Rules
             # The system prompt already includes the proper template;
@@ -700,9 +799,8 @@ class LLMService:
             sanitized = sanitize_messages(messages)
             # No bypass - let the normal failover chain handle it
             # but with sanitized messages that don't have inline lab strings
-            # Re-assign sanitized messages back
-            # (The existing failover loop below will use these sanitized messages)
             # We simply continue to the normal flow
+            pass
 
         # Handle GREETINGS: friendly response with Normal mode hint
         if intent_result.intent == Intent.GREETINGS:
@@ -715,6 +813,7 @@ class LLMService:
                     token_usage=TokenUsage(),
                     latency_ms=0,
                     success=True,
+                    suggested_labs=intent_result.suggested_labs or [],
                 )
             # Default greeting response
             greeting_text = ("Hello! I'm CyberGPT in Cyber mode — I can help with defensive security questions, scenario labs, or password audits. "
@@ -726,6 +825,7 @@ class LLMService:
                 token_usage=TokenUsage(),
                 latency_ms=0,
                 success=True,
+                suggested_labs=intent_result.suggested_labs or [],
             )
 
         # --- Original failover loop begins here ---
@@ -742,6 +842,12 @@ class LLMService:
                         f"Success with {model_id} "
                         f"({response.latency_ms:.0f}ms, {response.token_usage.total_tokens} tokens)"
                     )
+                    # Strip inline lab recommendations from LLM response
+                    # and inject suggested labs from catalog
+                    from services.scenario_manager import LAB_REPOSITORY
+                    cleaned_content, suggested_labs = _inject_lab_recommendations(response.content, LAB_REPOSITORY)
+                    response.content = cleaned_content
+                    response.suggested_labs = suggested_labs or intent_result.suggested_labs or []
                     return response
 
                 last_error = response.error
@@ -788,7 +894,7 @@ class LLMService:
             yield f"Error: {response.error}"
 
     def chat_sync(
-        self, messages: List[Dict[str, str]], tier: ModelTier = ModelTier.BALANCED
+        self, messages: List[Dict[str, str]], tier: ModelTier = ModelTier.BALANCED, mode: str = "cyber"
     ) -> LLMResponse:
         """Synchronous entry point for Flask handlers.
 
@@ -796,7 +902,7 @@ class LLMService:
         loop and blocks for the result. Safe to call from request threads; the
         underlying aiohttp session stays bound to one loop.
         """
-        return run_async(self.chat(messages, _coerce_tier(tier)))
+        return run_async(self.chat(messages, _coerce_tier(tier), mode))
 
     def get_token_stats(self) -> Dict[str, Any]:
         return {
@@ -848,6 +954,7 @@ class IntentResult:
     section_name: Optional[str]
     requires_telemetry: bool
     suggested_labs: List[dict] = None
+    action: Optional[str] = None  # e.g., "switch_mode"
 
     def __post_init__(self):
         if self.suggested_labs is None:
@@ -856,7 +963,7 @@ class IntentResult:
 
 # --- Intent Classification ---
 
-def _classify_intent(message: str) -> IntentResult:
+def _classify_intent(message: str, mode: str = "cyber") -> IntentResult:
     """Classify user message intent for routing decisions.
 
     Returns IntentResult determining whether to bypass LLM,
@@ -867,9 +974,41 @@ def _classify_intent(message: str) -> IntentResult:
     - CONCEPTS: "what is cyber security", "explain zero trust", etc.
     - INCIDENT_TRIAGE: "analyze log", "pcap", "alert", etc.
     - GREETINGS: "hi", "hello", "kaise ho", etc.
+    - OFF_TOPIC (Cyber mode): non-cyber queries like "what is trading"
     - GENERAL_CHAT: default fall-through.
     """
     lower = message.lower().strip()
+    
+    # --- Cyber-specific keywords for topic detection ---
+    cyber_keywords = [
+        "cyber", "security", "phishing", "malware", "ransomware", "spyware",
+        "sql injection", "xss", "oauth", "credential", "password", "network",
+        "dns", "tls", "siem", "event", "log", "incident", "zero trust",
+        "active directory", "kerberos", "kerberoasting", "pass the hash",
+        "psexec", "lateral movement", "privilege escalation", "persistence",
+        "c2", "command control", "ioc", "indicator", "mitre", "att&ck",
+        "vulnerability", "exploit", "patch", "cve", "cwe", "owasp",
+        "web appsec", "api", "jwt", "token", "auth", "mfa", "2fa",
+        "encryption", "tls", "ssl", "certificate", "pki", "ca",
+        "firewall", "ids", "ips", "edr", "xdr", "soc", "blue team",
+        "red team", "purple team", "threat hunting", "forensics",
+        "memory dump", "volatility", "sysmon", "edr", "sentinel",
+        "splunk", "sigma", "yara", "rules", "detection", "hunting",
+        "cloud", "aws", "azure", "gcp", "iam", "s3", "bucket",
+        "container", "kubernetes", "docker", "ci/cd", "devsecops",
+        "supply chain", "sbom", "dependency", "container", "image",
+        "email", "spam", "spoof", "dkim", "dmarc", "spf", "bec",
+        "quishing", "vishing", "smishing", "spearphish", "whaling",
+        "ransomware", "wiper", "ransom", "extortion", "leak",
+        "data breach", "exfiltration", "collection", "discovery",
+        "reconnaissance", "initial access", "execution", "persistence",
+        "privilege escalation", "defense evasion", "credential access",
+        "lateral movement", "command and control", "exfiltration",
+        "impact", "wiper", "destruction", "inhibit recovery"
+    ]
+    
+    # Check if query is cyber-related
+    is_cyber_related = any(kw in lower for kw in cyber_keywords)
     
     # --- Greetings first ---
     greeting_keywords_en = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening"]
@@ -928,7 +1067,44 @@ def _classify_intent(message: str) -> IntentResult:
     concept_keywords_en = [
         "what is cyber security", "what is information security",
         "explain zero trust", "zero trust model",
-        "explain defense in depth", "cia triad"
+        "explain defense in depth", "cia triad",
+        "what is pass the hash", "explain pass the hash",
+        "what is kerberoasting", "explain kerberoasting",
+        "what is golden ticket", "explain golden ticket",
+        "what is dcsync", "explain dcsync",
+        "what is pass the ticket", "explain pass the ticket",
+        "what is sql injection", "explain sql injection",
+        "what is xss", "explain xss", "cross site scripting",
+        "what is csrf", "explain csrf",
+        "what is rce", "explain rce", "remote code execution",
+        "what is lfi", "explain lfi", "local file inclusion",
+        "what is rfi", "explain rfi", "remote file inclusion",
+        "what is ssti", "explain ssti", "server side template injection",
+        "what is xxe", "explain xxe", "xml external entity",
+        "what is ssrf", "explain ssrf", "server side request forgery",
+        "what is idor", "explain idor", "insecure direct object reference",
+        "what is broken access control", "explain broken access control",
+        "what is security misconfiguration", "explain security misconfiguration",
+        "what is vulnerable components", "explain vulnerable components",
+        "what is authentication failure", "explain authentication failure",
+        "what is software integrity", "explain software integrity",
+        "what is logging failure", "explain logging failure",
+        "what is ssrf", "explain ssrf",
+        "what is gmsa", "explain gmsa", "group managed service account",
+        "what is ad cs", "explain ad cs", "active directory certificate services",
+        "what is certificate template", "explain certificate template",
+        "what is esc1", "explain esc1",
+        "what is dns tunneling", "explain dns tunneling",
+        "what is hsts", "explain hsts", "http strict transport security",
+        "what is tls", "explain tls", "transport layer security",
+        "what is certificate pinning", "explain certificate pinning",
+        "what is password spraying", "explain password spraying",
+        "what is brute force", "explain brute force",
+        "what is credential stuffing", "explain credential stuffing",
+        "what is mfa bypass", "explain mfa bypass",
+        "what is password reuse", "explain password reuse",
+        "what is entropy", "explain entropy", "shannon entropy",
+        "what is argon2id", "explain argon2id", "what is bcrypt", "explain bcrypt"
     ]
     concept_keywords_ur = ["cyber security kya hai", "zero trust kya hai"]
     concept_keywords_hi = ["cyber security kya hai", "zero trust kya hai"]
@@ -942,18 +1118,22 @@ def _classify_intent(message: str) -> IntentResult:
     )
     
     if is_concept:
+        # Extract suggested labs for this concept
+        from services.scenario_manager import LAB_REPOSITORY
+        suggested_labs = _extract_suggested_labs(lower, LAB_REPOSITORY)
         return IntentResult(
             intent=Intent.CONCEPTS,
             bypass_llm=True,
             direct_response=None,
             section_name="concept",
             requires_telemetry=False,
+            suggested_labs=suggested_labs,
         )
     
     # --- Incident/Triage questions ---
     incident_keywords_en = [
         "analyze log", "pcap", "alert", "incident response", "forensic",
-        "investigate", "triage", "hunt", "IOC", "indicators"
+        "investigate", "triage", "hunt", "ioc", "indicators"
     ]
     incident_keywords_ur = ["log analyze", "pcap dekhna", "alert"]
     incident_keywords_hi = ["log analyze", "pcap dekhna", "alert"]
@@ -967,21 +1147,42 @@ def _classify_intent(message: str) -> IntentResult:
     )
     
     if is_incident:
+        from services.scenario_manager import LAB_REPOSITORY
+        suggested_labs = _extract_suggested_labs(lower, LAB_REPOSITORY)
         return IntentResult(
             intent=Intent.INCIDENT_TRIAGE,
             bypass_llm=False,
             direct_response=None,
             section_name="incident",
             requires_telemetry=True,
+            suggested_labs=suggested_labs,
+        )
+    
+    # --- OFF_TOPIC in Cyber mode: non-cyber queries ---
+    if mode == "cyber" and not is_cyber_related:
+        return IntentResult(
+            intent=Intent.OFF_TOPIC,
+            bypass_llm=True,
+            direct_response=(
+                "I'm CyberGPT in Cyber mode — I specialize in defensive cybersecurity. "
+                "For general topics, please switch to Normal mode."
+            ),
+            section_name=None,
+            requires_telemetry=False,
+            action="switch_mode",
+            suggested_labs=[],
         )
     
     # --- Default: general chat ---
+    from services.scenario_manager import LAB_REPOSITORY
+    suggested_labs = _extract_suggested_labs(lower, LAB_REPOSITORY)
     return IntentResult(
         intent=Intent.GENERAL_CHAT,
         bypass_llm=False,
         direct_response=None,
         section_name=None,
         requires_telemetry=False,
+        suggested_labs=suggested_labs,
     )
     
 def _strip_lab_recommendations(text: str) -> str:

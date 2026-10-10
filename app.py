@@ -137,6 +137,7 @@ def api_chat():
     message = str(data.get("message", "")).strip()
     tier_name = str(data.get("tier", "balanced")).strip()
     session_id = str(data.get("session_id", "default"))
+    mode = str(data.get("mode", "cyber")).strip().lower()
 
     if not message:
         return jsonify({"success": False, "error": "Empty message"}), 400
@@ -149,7 +150,7 @@ def api_chat():
 
     # Bridge to the async LLM service via the persistent
     # background event loop (safe from Flask request threads).
-    response = llm_service.chat_sync(history, tier)
+    response = llm_service.chat_sync(history, tier, mode)
 
     # Push assistant reply into memory
     if response.success:

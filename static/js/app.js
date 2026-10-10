@@ -48,6 +48,7 @@ const MODULE_LABELS = {
   password: "Password Hardening Audit",
   soc: "SOC Incident Drills",
   cheatsheets: "Security Cheat Sheets",
+  "study-planner": "Study Planner",
 };
 
 function cryptoId() {
@@ -711,7 +712,7 @@ function setSendButtonLoading(isLoading) {
 /* ============================================================
    CHAT — append messages + double-click-safe send
    ============================================================ */
-function appendMessage(role, content, metaInfo) {
+function appendMessage(role, content, metaInfo, suggestedLabs, action) {
   const log = $("#chat-log");
   if (!log) return null;
 
@@ -742,6 +743,72 @@ function appendMessage(role, content, metaInfo) {
       tag.className = "msg-model-tag";
       tag.textContent = metaInfo;
       body.appendChild(tag);
+    }
+    // Render suggested lab chips
+    if (suggestedLabs && suggestedLabs.length > 0) {
+      const labChips = document.createElement("div");
+      labChips.className = "lab-chips";
+      labChips.style.cssText = "margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px;";
+      suggestedLabs.forEach((lab) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "lab-chip";
+        chip.style.cssText = "display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; font-family: var(--mono); font-size: 10px; font-weight: 500; color: var(--cyan); background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: var(--r-pill); cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease;";
+        chip.innerHTML = `<i data-lucide="book-open" class="h-3 w-3"></i><span>${escapeHtml(lab.title)}</span>`;
+        chip.dataset.labId = lab.id;
+        chip.addEventListener("click", () => {
+          // Navigate to the appropriate lab tab
+          const labTab = $(`.nav-tab[data-tab="${lab.category.toLowerCase().replace('/', '-').replace(' ', '-')}"]`);
+          if (labTab) {
+            labTab.click();
+          } else if (lab.category === "Phishing") {
+            $('.nav-tab[data-tab="phishing"]').click();
+          } else if (lab.category.startsWith("SOC") || lab.category === "Endpoint Defense" || lab.category === "Active Directory" || lab.category === "Web AppSec" || lab.category === "Cloud Security") {
+            $('.nav-tab[data-tab="soc"]').click();
+          }
+          // Auto-load the specific lab after a short delay
+          setTimeout(() => {
+            const card = $(`#card-${lab.id}`);
+            if (card) {
+              card.scrollIntoView({ behavior: "smooth", block: "center" });
+              card.style.outline = "2px solid var(--accent)";
+              setTimeout(() => { card.style.outline = ""; }, 2000);
+            }
+          }, 300);
+        });
+        labChips.appendChild(chip);
+      });
+      body.appendChild(labChips);
+      refreshIcons(labChips);
+    }
+    // Render action chip (e.g., "Switch to Normal Chat & Ask Again")
+    if (action === "switch_mode") {
+      const actionChips = document.createElement("div");
+      actionChips.className = "action-chips";
+      actionChips.style.cssText = "margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px;";
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "action-chip";
+      chip.style.cssText = "display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; font-family: var(--sans); font-size: 12px; font-weight: 500; color: var(--ink); background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-pill); cursor: pointer; transition: background 0.15s ease, opacity 0.15s ease;";
+      chip.innerHTML = `<i data-lucide="message-square" class="h-3.5 w-3.5"></i><span>Switch to Normal Chat & Ask Again</span>`;
+      chip.addEventListener("click", () => {
+        const normalPill = $('.mode-pill[data-mode="normal"]');
+        if (normalPill) normalPill.click();
+        // Re-send the last user message
+        const lastUserMsg = state.messages[state.messages.length - 1];
+        if (lastUserMsg && lastUserMsg.role === "user") {
+          const c = window.__composer;
+          if (c) {
+            c.input.value = lastUserMsg.content;
+            autosizeComposer();
+            updateSendState();
+            c.node.requestSubmit();
+          }
+        }
+      });
+      actionChips.appendChild(chip);
+      body.appendChild(actionChips);
+      refreshIcons(actionChips);
     }
   } else {
     body.textContent = content;
@@ -880,7 +947,7 @@ async function sendChatMessage(event) {
       const meta =
         `Model: ${data.model_used} · ${String(data.tier || "").toUpperCase()} · ` +
         `${data.tokens_used} tokens · ${data.latency_ms}ms`;
-      appendMessage("assistant", data.reply, meta);
+      appendMessage("assistant", data.reply, meta, data.suggested_labs, data.action);
     } else {
       appendMessage(
         "assistant",

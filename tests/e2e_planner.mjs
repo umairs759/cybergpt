@@ -196,19 +196,10 @@ async function runBrowser(browserType, browserName) {
     // Click export
     await page.click("#planner-export");
     await page.waitForTimeout(300);
-    // Trigger import file input
-    // Use page.evaluate to create and trigger file input
-    const exported = await page.evaluate(() => {
-      // This is tricky in headless; just verify the export data attribute exists
-      return true; // Placeholder - export functionality verified by unit logic
-    });
     ok(browserName, "export JSON button clickable");
-    // Import: simulate file selection
+    // Import: verify file input exists
     const fileInput = await page.$("#planner-import-input");
     if (fileInput) {
-      // Upload a simple valid JSON structure
-      const { JSDOM } = await import("jsdom"); // not available, use alternative
-      // Instead, just verify the import input exists
       ok(browserName, "import file input exists");
     }
   } catch (e) {
