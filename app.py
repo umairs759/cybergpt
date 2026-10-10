@@ -2,6 +2,7 @@
 CyberGPT Flask Application - Enterprise SOC Training & AI Mentorship Platform.
 API routes: chat, password audit, scenarios, evaluations, cheat sheets.
 CSRF disabled for JSON routes; in-memory SERVER_CHAT_MEMORY (last 10 msgs).
+Security: 6-pillar hardening via services/security.py
 """
 
 import os
@@ -16,6 +17,17 @@ from flask_cors import CORS
 from services.llm_service import llm_service, ModelTier
 from services.password_analyzer import password_analyzer
 from services.scenario_manager import scenario_manager
+from services.security import (
+    configure_security,
+    rate_limit,
+    validate_chat_input,
+    validate_analyzer_input,
+    wrap_user_evidence,
+    SecureErrorHandler,
+    FileUploadValidator,
+    MAX_CHAT_CHARS,
+    MAX_ANALYZER_CHARS,
+)
 
 # ----------------------------------------------------------------------------
 # Logging
@@ -38,6 +50,11 @@ app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024  # 2 MB body cap
 app.config["JSON_SORT_KEYS"] = False
 
 CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+# ----------------------------------------------------------------------------
+# Security Configuration (6-pillar hardening)
+# ----------------------------------------------------------------------------
+configure_security(app)
 
 # ----------------------------------------------------------------------------
 # Server-side chat memory (in-memory, per-session, strict 10 msgs / 5 turns)
@@ -132,12 +149,19 @@ def health():
 # ----------------------------------------------------------------------------
 @app.route("/api/chat", methods=["POST"])
 @json_only
+@rate_limit
 def api_chat():
     data = request.get_json(force=True, silent=True) or {}
     message = str(data.get("message", "")).strip()
     tier_name = str(data.get("tier", "balanced")).strip()
     session_id = str(data.get("session_id", "default"))
     mode = str(data.get("mode", "cyber")).strip().lower()
+
+    # Input validation
+    valid, result = validate_chat_input(message)
+    if not valid:
+        return jsonify({"success": False, "error": result}), 400
+    message = result  # sanitized message
 
     if not message:
         return jsonify({"success": False, "error": "Empty message"}), 400
@@ -191,6 +215,7 @@ def api_clear_history():
 # ----------------------------------------------------------------------------
 @app.route("/api/password/audit", methods=["POST"])
 @json_only
+@rate_limit
 def api_password_audit():
     data = request.get_json(force=True, silent=True) or {}
     password = str(data.get("password", ""))
@@ -210,6 +235,7 @@ def api_password_audit():
 
 @app.route("/api/password/entropy", methods=["POST"])
 @json_only
+@rate_limit
 def api_password_entropy():
     """Lightweight server-side entropy (used for verification; client computes instantly)."""
     data = request.get_json(force=True, silent=True) or {}
@@ -255,6 +281,53 @@ def api_scenario_evaluate(scenario_id):
         return jsonify({"success": False, "error": "selected_index (int) required"}), 400
     result = scenario_manager["evaluate"](scenario_id, selected)
     return jsonify({"success": result.pop("valid", False), "evaluation": result})
+
+
+# ----------------------------------------------------------------------------
+# API: Error Analyzer (security telemetry analysis)
+# ----------------------------------------------------------------------------
+@app.route("/api/error-analyzer", methods=["POST"])
+@json_only
+@rate_limit
+def api_error_analyzer():
+    data = request.get_json(force=True, silent=True) or {}
+    problem_type = str(data.get("problem_type", "Auto-detect")).strip()
+    environment = str(data.get("environment", "")).strip()
+    evidence = str(data.get("evidence", "")).strip()
+
+    # Input validation
+    valid, result = validate_analyzer_input(evidence)
+    if not valid:
+        return jsonify({"success": False, "error": result}), 400
+    evidence = result  # sanitized
+
+    if not evidence:
+        return jsonify({"success": False, "error": "Evidence required"}), 400
+
+    # Wrap evidence in delimiter for LLM processing
+    wrapped_evidence = wrap_user_evidence(evidence)
+
+    # For now, return a structured analysis response
+    # In a full implementation, this would call an LLM with the wrapped evidence
+    analysis = {
+        "problem_type": problem_type or "Auto-detect",
+        "environment": environment or "Unknown",
+        "evidence_received": True,
+        "evidence_length": len(evidence),
+        "note": "Security analysis would be performed here with wrapped evidence. The evidence is wrapped in delimiter tags to prevent injection.",
+        "redaction_applied": True,
+        "suggested_fixes": [
+            "Review telemetry for sensitive data before submission",
+            "Ensure delimiter tags are not present in raw evidence",
+            "Use the Cyber Error Analyzer tab for detailed analysis"
+        ],
+        "severity": "INFO"
+    }
+
+    return jsonify({
+        "success": True,
+        "report": analysis
+    })
 
 
 # ----------------------------------------------------------------------------

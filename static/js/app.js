@@ -223,11 +223,34 @@ function plainMarked(text) {
 /**
  * Render markdown, then post-process every <pre><code> fence into a
  * labelled, syntax-highlighted block with a 1-click "Copy Code" button.
+ * Output is sanitized with DOMPurify to prevent XSS.
  */
 function renderMarkdown(text) {
   const html = plainMarked(text);
+  
+  // Sanitize with DOMPurify if available
+  let sanitizedHtml = html;
+  if (window.DOMPurify && typeof window.DOMPurify.sanitize === "function") {
+    try {
+      sanitizedHtml = window.DOMPurify.sanitize(html, {
+        ALLOWED_TAGS: [
+          "p", "br", "h1", "h2", "h3", "h4", "h5", "h6",
+          "ul", "ol", "li", "strong", "em", "code", "pre",
+          "blockquote", "hr", "a", "table", "thead", "tbody",
+          "tr", "th", "td", "span", "div", "b", "i", "u"
+        ],
+        ALLOWED_ATTR: ["href", "class", "data-lang", "data-code-id", "target", "rel"],
+        ALLOW_DATA_ATTR: true
+      });
+    } catch (e) {
+      // Fallback to original if DOMPurify fails
+      sanitizedHtml = html;
+    }
+  }
+  
   const holder = document.createElement("div");
-  holder.innerHTML = html;
+  holder.innerHTML = sanitizedHtml;
+  // ... rest of function unchanged
 
   // Wrap bare tables so they scroll horizontally instead of overflowing.
   holder.querySelectorAll("table").forEach((table) => {

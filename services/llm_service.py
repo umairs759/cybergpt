@@ -233,18 +233,13 @@ TIER_TEMPERATURE: Dict[ModelTier, float] = {
     ModelTier.PRO: 0.7,
 }
 
-# Rotation pool of nvapi- keys. Env vars take precedence (loaded from .env at
-# import time); the defaults below mirror the .env pool as an out-of-box
-# fallback. NOTE: the first default key previously carried a typo (-kVG
-# instead of -qVG) which produced HTTP 403 "Authorization failed" on every
-# other request — it has been corrected here.
-DEFAULT_NVIDIA_KEYS = [
-    "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",
-    "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",
-]
-
-
 def _load_key_pool() -> List[str]:
+    """Load NVIDIA API keys from environment variables only.
+    
+    No hardcoded defaults - keys must be provided via:
+    - NVIDIA_API_KEYS (comma-separated list)
+    - NVIDIA_API_KEY (single key)
+    """
     keys: List[str] = []
     env_keys = os.getenv("NVIDIA_API_KEYS", "")
     for k in env_keys.split(","):
@@ -254,9 +249,9 @@ def _load_key_pool() -> List[str]:
     single = os.getenv("NVIDIA_API_KEY", "").strip()
     if single and single not in keys:
         keys.append(single)
-    for k in DEFAULT_NVIDIA_KEYS:
-        if k and k not in keys:
-            keys.append(k)
+    
+    if not keys:
+        logger.warning("No NVIDIA API keys found in environment! Set NVIDIA_API_KEYS or NVIDIA_API_KEY")
     return keys
 
 
