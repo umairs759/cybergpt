@@ -429,6 +429,9 @@ function initTabs() {
       const main = $("#app-main");
       if (main) main.scrollTop = 0;
 
+      // Refresh Lucide icons for the newly visible tab
+      refreshIcons();
+
       // Lazy-load the relevant module on first visit.
       if (target === "phishing") loadLab("phishing");
       if (target === "soc") loadLab("soc");
@@ -479,6 +482,87 @@ function initModeSwitcher() {
       }
     });
   });
+}
+
+/** Send a chat message with a specific mode (used by mode switcher). */
+function sendChatMessageWithMode(event, mode) {
+  event.preventDefault();
+  const c = window.__composer;
+  if (!c) return;
+
+  const input = c.input;
+  const message = input.value.trim();
+  if (!message) return;
+
+  // Double-click / double-submit protection.
+  if (c.sendBtn.disabled) return;
+
+  // Show typing indicator
+  showTypingIndicator();
+
+  // Check for multilingual small talk / greetings.
+  const multilingualReply = getMultilingualReply(message);
+  if (multilingualReply) {
+    appendMessage("user", message);
+    rememberTurn(message, "user");
+    if (state.messages.length === 1) placeComposer(true);
+    const hint = multilingualReply.modeHint
+      ? ` (tip: try ${multilingualReply.modeHint} mode for broader assistance)`
+      : "";
+    appendMessage("assistant", `${multilingualReply.reply}${hint}`);
+    removeTypingIndicator();
+    input.value = "";
+    autosizeComposer();
+    updateSendState();
+    return;
+  }
+
+  appendMessage("user", message);
+  rememberTurn(message, "user");
+  if (state.messages.length === 1) placeComposer(true);
+
+  // Clear input
+  input.value = "";
+  autosizeComposer();
+  setSendButtonLoading(true);
+
+  // Use the provided mode for this request
+  const requestMode = mode || state.mode;
+
+  fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message,
+      tier: state.tier,
+      mode: requestMode,
+      session_id: state.sessionId,
+    }),
+  })
+    .then((res) => res.json())
+    .then((data) => {
+      removeTypingIndicator();
+      if (data.success) {
+        if (data.session_id) state.sessionId = data.session_id;
+        updateSessionChip();
+        const meta = `Model: ${data.model_used} · ${String(data.tier || "").toUpperCase()} · ${data.tokens_used} tokens · ${data.latency_ms}ms`;
+        appendMessage("assistant", data.reply, meta);
+      } else {
+        appendMessage("assistant", `⚠️ **Inference service unavailable**\n\n${escapeHtml(data.error || "Unknown error")}`);
+        input.value = message; // Restore on error
+      }
+    })
+    .catch((err) => {
+      removeTypingIndicator();
+      appendMessage("assistant", `⚠️ **Network error:** ${escapeHtml(err.message)}`);
+      input.value = message; // Restore on error
+    })
+    .finally(() => {
+      setSendButtonLoading(false);
+      autosizeComposer();
+      updateSendState();
+      if (!isMobile()) c.input.focus();
+    });
 }
 
 function updateChatMeta() {
@@ -683,11 +767,12 @@ function showTypingIndicator() {
   if (existing) existing.remove();
 
   const typing = document.createElement("div");
-  typing.className = "chat-typing flex items-center gap-1.5 p-3 rounded-xl bg-surface border border-edge w-fit";
+  typing.className = "chat-typing";
+  typing.id = "chat-typing-indicator";
   typing.innerHTML = `
-    <span class="dot w-2 h-2 rounded-full bg-accent animate-bounce"></span>
-    <span class="dot w-2 h-2 rounded-full bg-accent animate-bounce" [animation-delay:0.2s]></span>
-    <span class="dot w-2 h-2 rounded-full bg-accent animate-bounce" [animation-delay:0.4s]></span>
+    <span class="dot"></span>
+    <span class="dot"></span>
+    <span class="dot"></span>
   `;
   log.appendChild(typing);
   log.scrollTop = log.scrollHeight;
@@ -706,7 +791,6 @@ async function sendChatMessage(event) {
   if (!c) return;
 
   const input = c.input;
-  const originalValue = input.value; // Save for restoration on error
   const message = input.value.trim();
   if (!message) return;
 
@@ -714,7 +798,7 @@ async function sendChatMessage(event) {
   if (c.sendBtn.disabled) return;
 
   // Show typing indicator
-  const typingId = showTypingIndicator();
+  showTypingIndicator();
 
   // Optional telemetry artifact is attached as a labelled, bounded block.
   let payload = message;
@@ -764,7 +848,8 @@ async function sendChatMessage(event) {
   // migrates into the sticky dock.
   if (state.messages.length === 1) placeComposer(true);
 
-  input.value = ""; // Clear now; will be restored on error if needed
+  // Clear input and attachment state NOW (after dispatch decision, before await)
+  input.value = "";
   state.attachment = null;
   const fileInput = c.node.querySelector("#telemetry-file");
   if (fileInput) fileInput.value = "";
@@ -801,17 +886,19 @@ async function sendChatMessage(event) {
         "assistant",
         `⚠️ **Inference service unavailable**\n\n${escapeHtml(data.error || "Unknown error")}\n\nThe NVIDIA NIM failover chain was exhausted. Verify the account has live models provisioned.`
       );
-      // Restore input on error
-      input.value = originalValue;
+      // Restore input on error (user can retry)
+      input.value = message;
     }
   } catch (err) {
     removeTypingIndicator();
     appendMessage("assistant", `⚠️ **Network error:** ${escapeHtml(err.message)}`);
-    // Restore input on error
-    input.value = originalValue;
+    // Restore input on error (user can retry)
+    input.value = message;
   } finally {
     // Always re-enable the send button — even on failure.
     setSendButtonLoading(false);
+    autosizeComposer();
+    updateSendState();
     if (!isMobile()) c.input.focus();
   }
 }
@@ -930,19 +1017,8 @@ function loadRecentChat(messages) {
     appendMessage(role, content);
   });
 
-  // Show dock and hide empty state
-  const empty = $("#chat-empty");
-  if (empty) empty.style.display = "none";
-
-  const dock = $("#composer-dock");
-  if (dock) dock.style.display = "flex";
-
-  const shell = $(".app-shell");
-  if (shell) shell.classList.add("has-messages");
-
-  // Reset composer placement
-  const emptySlot = $("#empty-composer-slot");
-  if (emptySlot) emptySlot.style.display = "none";
+  // Show dock and hide empty state using placeComposer
+  placeComposer(true);
 
   // Reset state
   state.messages = messages.map((m) => ({
@@ -1079,17 +1155,8 @@ function startNewChat() {
     const empty = $("#chat-empty");
     if (empty) empty.style.display = "flex";
 
-    // Hide dock and show empty composer slot
-    const dock = $("#composer-dock");
-    if (dock) dock.style.display = "none";
-
-    // Show empty composer slot
-    const emptySlot = $("#empty-composer-slot");
-    if (emptySlot) emptySlot.style.display = "block";
-
-    // Reset composer placement
-    const shell = $(".app-shell");
-    if (shell) shell.classList.remove("has-messages");
+    // Reset composer placement using placeComposer (handles dock/empty-slot swap)
+    placeComposer(false);
 
     // Reset state
     state.messages = [];
@@ -1106,6 +1173,7 @@ function startNewChat() {
     }
 
     // Mobile drawer cleanup
+    const shell = $(".app-shell");
     if (shell && isMobile()) shell.classList.remove("sidebar-open");
   }
 
@@ -2261,22 +2329,29 @@ function initStudyPlanner() {
     reader.readAsText(file);
   }
 
-  // Event listeners
-  document.querySelector("#planner-add-task").addEventListener("click", addTask);
-  document.querySelector("#planner-export").addEventListener("click", exportPlan);
-  document.querySelector("#planner-import").click(); // focus
+  // Event listeners - only attach if elements exist
+  const addTaskBtn = document.querySelector("#planner-add-task");
+  if (addTaskBtn) addTaskBtn.addEventListener("click", addTask);
 
-  // Import file input
-  const plannerImportInput = document.createElement("input");
-  plannerImportInput.type = "file";
-  plannerImportInput.id = "planner-import-input";
-  plannerImportInput.accept = ".json";
-  plannerImportInput.style.display = "none";
-  document.body.appendChild(plannerImportInput);
-  document.querySelector("#planner-import").addEventListener("click", () => {
-    plannerImportInput.click();
-  });
-  plannerImportInput.addEventListener("change", importPlan);
+  const exportBtn = document.querySelector("#planner-export");
+  if (exportBtn) exportBtn.addEventListener("click", exportPlan);
+
+  const importBtn = document.querySelector("#planner-import");
+  if (importBtn) {
+    // importBtn.click(); // focus - removed to avoid error
+
+    // Import file input
+    const plannerImportInput = document.createElement("input");
+    plannerImportInput.type = "file";
+    plannerImportInput.id = "planner-import-input";
+    plannerImportInput.accept = ".json";
+    plannerImportInput.style.display = "none";
+    document.body.appendChild(plannerImportInput);
+    importBtn.addEventListener("click", () => {
+      plannerImportInput.click();
+    });
+    plannerImportInput.addEventListener("change", importPlan);
+  }
 
   // Tab switching
   document.querySelectorAll(".planner-tab").forEach((tab) => {
@@ -2288,25 +2363,30 @@ function initStudyPlanner() {
   });
 
   // Task delete buttons
-  plannerTasksContainer.addEventListener("click", (e) => {
-    const deleteBtn = e.target.closest(".task-delete");
-    if (deleteBtn) {
-      const taskId = deleteBtn.dataset.taskId;
-      deleteTask(taskId);
-    }
-  });
+  if (plannerTasksContainer) {
+    plannerTasksContainer.addEventListener("click", (e) => {
+      const deleteBtn = e.target.closest(".task-delete");
+      if (deleteBtn) {
+        const taskId = deleteBtn.dataset.taskId;
+        deleteTask(taskId);
+      }
+    });
+  }
 
   // Auto-assign by difficulty
-  document.querySelector("#planner-autoassign").addEventListener("click", () => {
-    const target = parseInt(plannerTargetInput.value) || 3;
-    const allLabs = Object.values(LAB_REPOSITORY);
-    const difficultyMap = { "Beginner": 0, "Intermediate": 1, "Advanced": 2 };
-    const sorted = [...allLabs].sort((a, b) => difficultyMap[a.difficulty] - difficultyMap[b.difficulty]);
-    const selected = sorted.slice(0, target);
-    window.__plannerSelectedLabs = selected.map(l => l.id);
-    // Re-run addTask which will use the selected labs
-    addTask();
-  });
+  const autoAssignBtn = document.querySelector("#planner-autoassign");
+  if (autoAssignBtn) {
+    autoAssignBtn.addEventListener("click", () => {
+      const target = parseInt(plannerTargetInput.value) || 3;
+      const allLabs = Object.values(LAB_REPOSITORY);
+      const difficultyMap = { "Beginner": 0, "Intermediate": 1, "Advanced": 2 };
+      const sorted = [...allLabs].sort((a, b) => difficultyMap[a.difficulty] - difficultyMap[b.difficulty]);
+      const selected = sorted.slice(0, target);
+      window.__plannerSelectedLabs = selected.map(l => l.id);
+      // Re-run addTask which will use the selected labs
+      addTask();
+    });
+  }
 
   // Initial render
   renderPlanner();

@@ -729,6 +729,7 @@ class LLMService:
             )
 
         # --- Original failover loop begins here ---
+        tried_models = []
         for model_id in self._failover_plan(tier):
             tried_models.append(model_id)
             payload = self._build_payload(sanitized, tier, model_id)
@@ -825,6 +826,33 @@ def reset_session_history() -> None:
 
 
 # --- Intent Classification ---
+
+from enum import Enum
+from dataclasses import dataclass
+from typing import Optional, List
+
+class Intent(Enum):
+    META_IDENTITY = "meta_identity"
+    CONCEPTS = "concepts"
+    INCIDENT_TRIAGE = "incident_triage"
+    GREETINGS = "greetings"
+    GENERAL_CHAT = "general_chat"
+    OFF_TOPIC = "off_topic"
+
+
+@dataclass
+class IntentResult:
+    intent: Intent
+    bypass_llm: bool
+    direct_response: Optional[str]
+    section_name: Optional[str]
+    requires_telemetry: bool
+    suggested_labs: List[dict] = None
+
+    def __post_init__(self):
+        if self.suggested_labs is None:
+            self.suggested_labs = []
+
 
 # --- Intent Classification ---
 

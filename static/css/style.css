@@ -90,13 +90,17 @@ button { font-family: inherit; }
   scroll-behavior: smooth;
 }
 
-/* Every module view is a centered, width-constrained column. */
+/* Every module view is a centered, width-constrained column.
+   STRICT ISOLATION: only the active view renders; all others are display:none !important. */
 .tab-view {
-  display: none;
+  display: none !important;
   min-height: 100%;
   padding: 24px 24px 40px;
 }
-.tab-view.active { display: block; }
+.tab-view.active {
+  display: flex !important;
+  flex-direction: column;
+}
 
 @media (min-width: 1025px) {
   .tab-view { max-width: 1280px; margin: 0 auto; padding: 28px 32px 48px; }
