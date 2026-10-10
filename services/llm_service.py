@@ -964,89 +964,22 @@ def _classify_intent(message: str, mode: str = "cyber") -> IntentResult:
     Returns IntentResult determining whether to bypass LLM,
     which template to use, and what direct response to give.
 
-    Classification logic is embedded inline (no external module dependency):
-    - META_IDENTITY: "who are you", "whats your name", etc.
-    - CONCEPTS: "what is cyber security", "explain zero trust", etc.
-    - INCIDENT_TRIAGE: "analyze log", "pcap", "alert", etc.
-    - GREETINGS: "hi", "hello", "kaise ho", etc.
-    - OFF_TOPIC (Cyber mode): non-cyber queries like "what is trading"
-    - GENERAL_CHAT: default fall-through.
+    Classification logic follows strict order:
+    1. META_IDENTITY: exact anchor-regex match only (entire query must be
+       purely an identity query). Mentioning security concepts disqualifies.
+    2. Mode evaluation FIRST (before any other classification):
+       - mode == 'normal': bypass ALL cyber filters, send to LLM as general chat
+       - mode == 'cyber': strict cyber routing (only non-cyber topics → off-topic)
+    3. Fail-safe: if uncertain, default to LLM routing.
     """
-    lower = message.lower().strip()
-    
-    # --- Cyber-specific keywords for topic detection ---
-    cyber_keywords = [
-        "cyber", "security", "phishing", "malware", "ransomware", "spyware",
-        "sql injection", "xss", "oauth", "credential", "password", "network",
-        "dns", "tls", "siem", "event", "log", "incident", "zero trust",
-        "active directory", "kerberos", "kerberoasting", "pass the hash",
-        "psexec", "lateral movement", "privilege escalation", "persistence",
-        "c2", "command control", "ioc", "indicator", "mitre", "att&ck",
-        "vulnerability", "exploit", "patch", "cve", "cwe", "owasp",
-        "web appsec", "api", "jwt", "token", "auth", "mfa", "2fa",
-        "encryption", "tls", "ssl", "certificate", "pki", "ca",
-        "firewall", "ids", "ips", "edr", "xdr", "soc", "blue team",
-        "red team", "purple team", "threat hunting", "forensics",
-        "memory dump", "volatility", "sysmon", "edr", "sentinel",
-        "splunk", "sigma", "yara", "rules", "detection", "hunting",
-        "cloud", "aws", "azure", "gcp", "iam", "s3", "bucket",
-        "container", "kubernetes", "docker", "ci/cd", "devsecops",
-        "supply chain", "sbom", "dependency", "container", "image",
-        "email", "spam", "spoof", "dkim", "dmarc", "spf", "bec",
-        "quishing", "vishing", "smishing", "spearphish", "whaling",
-        "ransomware", "wiper", "ransom", "extortion", "leak",
-        "data breach", "exfiltration", "collection", "discovery",
-        "reconnaissance", "initial access", "execution", "persistence",
-        "privilege escalation", "defense evasion", "credential access",
-        "lateral movement", "command and control", "exfiltration",
-        "impact", "wiper", "destruction", "inhibit recovery"
-    ]
-    
-    # Check if query is cyber-related
-    is_cyber_related = any(kw in lower for kw in cyber_keywords)
-    
-    # --- Greetings first ---
-    greeting_keywords_en = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening"]
-    greeting_keywords_ur = ["salaam", "assalam o alikum"]
-    greeting_keywords_hi = ["namaste", "hello"]
-    greeting_keywords_pa = ["sat sri akal", "satnam"]
-    
-    is_greeting = (
-        any(kw in lower for kw in greeting_keywords_en) or
-        any(kw in lower for kw in greeting_keywords_ur) or
-        any(kw in lower for kw in greeting_keywords_hi) or
-        any(kw in lower for kw in greeting_keywords_pa)
-    )
-    
-    if is_greeting:
-        return IntentResult(
-            intent=Intent.GREETINGS,
-            bypass_llm=True,
-            direct_response=(
-                "I'm CyberGPT, a defensive cybersecurity learning assistant "
-                "developed by Muhammad Umair. How can I assist your security studies today?"
-            ),
-            section_name=None,
-            requires_telemetry=False,
-        )
-    
-    # --- Identity/Meta questions ---
-    meta_keywords_en = [
-        "who are you", "what is your name", "your name is",
-        "whats your name", "who made you", "created by", "developer"
-    ]
-    meta_keywords_ur = ["tera naam kya hai", "tum kaun ho", "ye bot kaun hai", "is ka developer kaun hai"]
-    meta_keywords_hi = ["tum kaun ho", "mera naam kya hai", "iska developer kaun hai"]
-    meta_keywords_pa = ["tuani kovan", "tusi kaun hai", "tun mere kitte da developer kaun hai"]
-    
-    is_meta = (
-        any(kw in lower for kw in meta_keywords_en) or
-        any(kw in lower for kw in meta_keywords_ur) or
-        any(kw in lower for kw in meta_keywords_hi) or
-        any(kw in lower for kw in meta_keywords_pa)
-    )
-    
-    if is_meta:
+    lower = (message or "").lower().strip()
+
+    # --- 1. Strict Identity (META) Detection using exact anchor regex ---
+    # Match ONLY if the entire query is purely an identity query.
+    # If the query mentions security concepts, tools, protocols, or logs,
+    # IT IS NOT an identity query.
+    identity_pattern = r"^\s*(who are you|what('s| is) your name|whats your name|who made you|who created you|who developed you|tera naam|kiska bot ho|tum kaun ho)\s*\??$"
+    if re.match(identity_pattern, lower):
         return IntentResult(
             intent=Intent.META_IDENTITY,
             bypass_llm=True,
@@ -1057,104 +990,42 @@ def _classify_intent(message: str, mode: str = "cyber") -> IntentResult:
             section_name=None,
             requires_telemetry=False,
         )
-    
-    # --- Concept questions ---
-    concept_keywords_en = [
-        "what is cyber security", "what is information security",
-        "explain zero trust", "zero trust model",
-        "explain defense in depth", "cia triad",
-        "what is pass the hash", "explain pass the hash",
-        "what is kerberoasting", "explain kerberoasting",
-        "what is golden ticket", "explain golden ticket",
-        "what is dcsync", "explain dcsync",
-        "what is pass the ticket", "explain pass the ticket",
-        "what is sql injection", "explain sql injection",
-        "what is xss", "explain xss", "cross site scripting",
-        "what is csrf", "explain csrf",
-        "what is rce", "explain rce", "remote code execution",
-        "what is lfi", "explain lfi", "local file inclusion",
-        "what is rfi", "explain rfi", "remote file inclusion",
-        "what is ssti", "explain ssti", "server side template injection",
-        "what is xxe", "explain xxe", "xml external entity",
-        "what is ssrf", "explain ssrf", "server side request forgery",
-        "what is idor", "explain idor", "insecure direct object reference",
-        "what is broken access control", "explain broken access control",
-        "what is security misconfiguration", "explain security misconfiguration",
-        "what is vulnerable components", "explain vulnerable components",
-        "what is authentication failure", "explain authentication failure",
-        "what is software integrity", "explain software integrity",
-        "what is logging failure", "explain logging failure",
-        "what is ssrf", "explain ssrf",
-        "what is gmsa", "explain gmsa", "group managed service account",
-        "what is ad cs", "explain ad cs", "active directory certificate services",
-        "what is certificate template", "explain certificate template",
-        "what is esc1", "explain esc1",
-        "what is dns tunneling", "explain dns tunneling",
-        "what is hsts", "explain hsts", "http strict transport security",
-        "what is tls", "explain tls", "transport layer security",
-        "what is certificate pinning", "explain certificate pinning",
-        "what is password spraying", "explain password spraying",
-        "what is brute force", "explain brute force",
-        "what is credential stuffing", "explain credential stuffing",
-        "what is mfa bypass", "explain mfa bypass",
-        "what is password reuse", "explain password reuse",
-        "what is entropy", "explain entropy", "shannon entropy",
-        "what is argon2id", "explain argon2id", "what is bcrypt", "explain bcrypt"
-    ]
-    concept_keywords_ur = ["cyber security kya hai", "zero trust kya hai"]
-    concept_keywords_hi = ["cyber security kya hai", "zero trust kya hai"]
-    concept_keywords_pa = ["cyber security kya hai", "zero trust kya hai"]
-    
-    is_concept = (
-        any(kw in lower for kw in concept_keywords_en) or
-        any(kw in lower for kw in concept_keywords_ur) or
-        any(kw in lower for kw in concept_keywords_hi) or
-        any(kw in lower for kw in concept_keywords_pa)
-    )
-    
-    if is_concept:
-        # Extract suggested labs for this concept
+
+    # --- 2. Mode Evaluation FIRST (before all other classification) ---
+    # If mode == 'normal': bypass ALL cyber-only off-topic filters,
+    # send prompt directly to the LLM with a helpful general-purpose system prompt.
+    if mode == "normal":
         from services.scenario_manager import LAB_REPOSITORY
         suggested_labs = _extract_suggested_labs(lower, LAB_REPOSITORY)
         return IntentResult(
-            intent=Intent.CONCEPTS,
-            bypass_llm=True,
+            intent=Intent.GENERAL_CHAT,
+            bypass_llm=False,
             direct_response=None,
-            section_name="concept",
+            section_name=None,
             requires_telemetry=False,
             suggested_labs=suggested_labs,
         )
-    
-    # --- Incident/Triage questions ---
-    incident_keywords_en = [
-        "analyze log", "pcap", "alert", "incident response", "forensic",
-        "investigate", "triage", "hunt", "ioc", "indicators"
+
+    # If mode == 'cyber': apply strict cyber routing
+    # In cyber mode, only trigger off-topic for clearly non-cyber topics.
+    # Technical cyber queries (Pass-the-Hash, Zero Trust, SQLi, etc.) MUST
+    # always forward to the LLM — never classify as off-topic.
+
+    # --- OFF_TOPIC in Cyber mode: only clearly non-cyber topics ---
+    # Define clearly non-cyber keyword sets (lifestyle, entertainment, etc.)
+    # These are topics that have no place in a defensive cybersecurity context.
+    non_cyber_keywords = [
+        "cooking", "recipe", "cook", "food", "pizza", "burger",
+        "movies", "film", "actor", "celebrity",
+        "sports", "cricket", "football", "soccer", "basketball",
+        "stock", "trading", "market", "investment",
+        "music", "song", "artist", "concert",
+        "travel", "vacation", "hotel", "tourism",
+        "fashion", "style", "clothing", "brand",
+        "gaming", "console", "game", "character",
     ]
-    incident_keywords_ur = ["log analyze", "pcap dekhna", "alert"]
-    incident_keywords_hi = ["log analyze", "pcap dekhna", "alert"]
-    incident_keywords_pa = ["log analyze", "pcap dekhna", "alert"]
-    
-    is_incident = (
-        any(kw in lower for kw in incident_keywords_en) or
-        any(kw in lower for kw in incident_keywords_ur) or
-        any(kw in lower for kw in incident_keywords_hi) or
-        any(kw in lower for kw in incident_keywords_pa)
-    )
-    
-    if is_incident:
-        from services.scenario_manager import LAB_REPOSITORY
-        suggested_labs = _extract_suggested_labs(lower, LAB_REPOSITORY)
-        return IntentResult(
-            intent=Intent.INCIDENT_TRIAGE,
-            bypass_llm=False,
-            direct_response=None,
-            section_name="incident",
-            requires_telemetry=True,
-            suggested_labs=suggested_labs,
-        )
-    
-    # --- OFF_TOPIC in Cyber mode: non-cyber queries ---
-    if mode == "cyber" and not is_cyber_related:
+    is_non_cyber = any(kw in lower for kw in non_cyber_keywords)
+    if mode == "cyber" and is_non_cyber:
         return IntentResult(
             intent=Intent.OFF_TOPIC,
             bypass_llm=True,
@@ -1167,8 +1038,10 @@ def _classify_intent(message: str, mode: str = "cyber") -> IntentResult:
             action="switch_mode",
             suggested_labs=[],
         )
-    
-    # --- Default: general chat ---
+
+    # --- Default: general chat (fail-safe) ---
+    # If classification is uncertain, default to calling the LLM instead of
+    # returning hardcoded responses. Technical cyber queries always reach the LLM.
     from services.scenario_manager import LAB_REPOSITORY
     suggested_labs = _extract_suggested_labs(lower, LAB_REPOSITORY)
     return IntentResult(

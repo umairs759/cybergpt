@@ -490,22 +490,37 @@ function initModeSwitcher() {
   pills.forEach((pill) => {
     pill.addEventListener("click", () => {
       const mode = pill.dataset.mode;
-      state.mode = mode;
-
-      // Toggle active styling
-      pills.forEach((p) => p.classList.remove("active"));
-      pill.classList.add("active");
-
-      // Re-send current input with new mode
-      const input = $("#chat-input");
-      if (input && input.value.trim()) {
-        const msg = input.value.trim();
-        appendMessage("user", msg);
-        rememberTurn(msg);
-        sendChatMessageWithMode({ preventDefault: () => {} }, mode);
-      }
+      setMode(mode);
     });
   });
+}
+
+/**
+ * Set the chat mode and update UI accordingly.
+ * - Updates state.mode
+ * - Updates active state on mode pills
+ * - Updates the input placeholder text
+ * - When called with 'normal', also triggers the action chip behavior
+ */
+function setMode(newMode) {
+  state.mode = newMode;
+  const cyberBtn = document.querySelector('#mode-cyber') || document.querySelector('[data-mode="cyber"]');
+  const normalBtn = document.querySelector('#mode-normal') || document.querySelector('[data-mode="normal"]');
+  if (cyberBtn && normalBtn) {
+    if (newMode === 'cyber') {
+      cyberBtn.classList.add('active', 'bg-accent', 'text-white');
+      normalBtn.classList.remove('active', 'bg-accent', 'text-white');
+    } else {
+      normalBtn.classList.add('active', 'bg-accent', 'text-white');
+      cyberBtn.classList.remove('active', 'bg-accent', 'text-white');
+    }
+  }
+  const input = document.querySelector('#chat-input');
+  if (input) {
+    input.placeholder = newMode === 'cyber'
+      ? 'Ask the SOC copilot... (Enter to send, Shift+Enter for a new line)'
+      : 'Ask anything in Normal mode...';
+  }
 }
 
 /** Send a chat message with a specific mode (used by mode switcher). */
@@ -956,7 +971,7 @@ async function sendChatMessage(event) {
       body: JSON.stringify({
         message: payload,
         tier: state.tier,
-        mode: state.mode,
+        mode: state.mode || "cyber",
         session_id: state.sessionId,
       }),
     });
@@ -2008,6 +2023,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initTierSwitcher();
   initSidebar();
   initComposer();
+  initModeSwitcher();
   initQuickPills();
   initCodeCopyDelegation($("#chat-log"));
   initCodeCopyDelegation(document);
