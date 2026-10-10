@@ -520,9 +520,15 @@ def server_error(e):
 
 
 def main():
+    """Entry point — strictly local runtime (http://127.0.0.1:5000).
+
+    Security Pillar 5: DEBUG defaults to False; Pillar 3: no secrets here.
+    The bind address is loopback-only so the simulator is never exposed on
+    LAN interfaces (classroom NAT safety).
+    """
     port = int(os.environ.get("PORT", 5000))
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)
+    app.run(host="127.0.0.1", port=port, debug=debug, threaded=True)
 
 
 if __name__ == "__main__":
