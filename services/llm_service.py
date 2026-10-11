@@ -235,8 +235,6 @@ TIER_TEMPERATURE: Dict[ModelTier, float] = {
 # instead of -qVG) which produced HTTP 403 "Authorization failed" on every
 # other request — it has been corrected here.
 DEFAULT_NVIDIA_KEYS = [
-    "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",
-    "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",
 ]
 
 

@@ -25,10 +25,8 @@ class Config:
     
     # NVIDIA NIM Configuration
     NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-    NVIDIA_API_KEYS = os.getenv(
-        "NVIDIA_API_KEYS",
-        "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,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"
-    ).split(",")
+    _keys_env = os.getenv("NVIDIA_API_KEYS") or os.getenv("NVIDIA_API_KEY", "")
+    NVIDIA_API_KEYS = [k.strip() for k in _keys_env.split(",") if k.strip()]
     
     # Rate Limiting
     RATELIMIT_STORAGE_URL = os.getenv("RATELIMIT_STORAGE_URL", "memory://")
