@@ -1778,7 +1778,7 @@ class KnowledgeEngine:
         load time so suggested chips are always real, clickable labs.
     """
 
-    HIGH_CONFIDENCE = 65          # minimum score for an instant engine answer
+    HIGH_CONFIDENCE = 60          # minimum score for an instant engine answer
     MAX_SUGGESTED_LABS = 2
 
     def __init__(self, nodes: List[KnowledgeNode]):

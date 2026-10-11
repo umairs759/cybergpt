@@ -10,6 +10,7 @@ import json
 import logging
 from collections import OrderedDict, deque
 from functools import wraps
+from typing import Dict
 
 from flask import Flask, request, jsonify, send_from_directory, render_template
 from flask_cors import CORS
@@ -135,18 +136,41 @@ def static_files(filename):
 # ----------------------------------------------------------------------------
 @app.route("/api/health")
 def health():
+    from services.knowledge_engine import knowledge_engine
+
     return jsonify({
         "status": "ok",
         "platform": "CyberGPT",
         "subtitle": "Defensive Cyber Intelligence & SOC Operations Simulator",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "llm_session": llm_service.get_token_stats(),
+        "knowledge_engine": knowledge_engine.stats(),
     })
 
 
 # ----------------------------------------------------------------------------
-# API: Chat (LLM with tier + failover)
+# API: Chat (dual-mode intelligence with BYOK + failover)
 # ----------------------------------------------------------------------------
+# BYOK keys travel per-request from the browser Settings modal (localStorage)
+# and are NEVER logged or persisted server-side.
+MAX_BYOK_KEY_CHARS = 200
+
+
+def _sanitize_byok(data: Dict) -> Dict[str, str]:
+    """Extract and bound user-supplied provider keys/models from the payload."""
+    byok: Dict[str, str] = {}
+    for field_name, key_name in (
+        ("openai_api_key", "openai_api_key"),
+        ("anthropic_api_key", "anthropic_api_key"),
+        ("openai_model", "openai_model"),
+        ("anthropic_model", "anthropic_model"),
+    ):
+        value = str(data.get(field_name, "") or "").strip()
+        if value:
+            byok[key_name] = value[:MAX_BYOK_KEY_CHARS]
+    return byok
+
+
 @app.route("/api/chat", methods=["POST"])
 @json_only
 @rate_limit
@@ -156,6 +180,7 @@ def api_chat():
     tier_name = str(data.get("tier", "balanced")).strip()
     session_id = str(data.get("session_id", "default"))
     mode = str(data.get("mode", "cyber")).strip().lower()
+    mode = "normal" if mode == "normal" else "cyber"
 
     # Input validation
     valid, result = validate_chat_input(message)
@@ -172,9 +197,12 @@ def api_chat():
 
     tier = _resolve_tier(tier_name)
 
+    # BYOK (user-supplied OpenAI / Anthropic credentials), sanitized + bounded.
+    byok = _sanitize_byok(data)
+
     # Bridge to the async LLM service via the persistent
     # background event loop (safe from Flask request threads).
-    response = llm_service.chat_sync(history, tier, mode)
+    response = llm_service.chat_sync(history, tier, mode, byok)
 
     # Push assistant reply into memory
     if response.success:
@@ -183,6 +211,7 @@ def api_chat():
     payload = response.to_dict()
     payload["session_id"] = session_id
     payload["history_length"] = len(_get_history(session_id))
+    payload["mode"] = mode
     return jsonify(payload)
 
 

@@ -1,29 +1,31 @@
 """
-CyberGPT LLM Service — NVIDIA NIM enterprise failover engine.
-
-CRITICAL ARCHITECTURE:
-  * ALL requests route exclusively to NVIDIA NIM
-    (https://integrate.api.nvidia.com/v1) using nvapi- keys.
-  * No third-party DeepSeek / GLM endpoints are ever contacted.
-  * Rotation pool of nvapi- keys with 401/403 quarantine + rotation.
-  * Strict 50.0s client timeout.
-  * Per-tier NVIDIA NIM model identifiers with enforced token caps.
-
-MODEL DISCOVERY (verified live against GET /v1/models + 1-token completions):
-  * meta/llama-3.1-8b-instruct / meta/llama-3.3-70b-instruct -> HTTP 410 (EOL).
-  * ibm/granite, microsoft/phi-3.5, mistral-*, nemotron-4-340b,
-    llama-3.1-nemotron-51b/70b/ultra -> HTTP 404 (not provisioned).
-  * Only the models below returned HTTP 200 with real completions, so
-    TIER_MODELS and every fallback slot are bound strictly to them.
-
-VERIFIED-200 TIER MAP (latency medians from live benchmark):
-  Flash    -> nvidia/nemotron-3-super-120b-a12b   (~1.8-3s, MoE 12B active)
-  Balanced -> nvidia/nemotron-3-super-120b-a12b   (clean 4-7 line answers)
-  Pro      -> nvidia/nemotron-3-super-120b-a12b   (120B; proven 13-20 line briefs)
-  Fallback -> openai/gpt-oss-20b (deep reasoner), nvidia/nemotron-3.5-lightning-30b-a3b,
-              poolside/laguna-xs-2.1 — all 200-verified. lightning is only ever
-              served with chat_template_kwargs.enable_thinking=false — without
-              it, it dumps its chain-of-thought into the visible content.
+CyberGPT LLM Service — Dual-Mode Intelligence, BYOK & Resilient Failover
+====================================================================
+CRITICAL ARCHITECTURE (v2.1):
+  * Hierarchy of request processing (INSTRUCTIONS.md §4.1):
+      STEP 1  Case-insensitive identity/meta queries bypass everything
+              and return an instant deterministic credit to Muhammad Umair.
+      STEP 2  Mode check:
+        - mode == 'cyber': (a) CyBOK knowledge engine instant answer,
+              (b) unambiguous off-topic -> polite notice + switch chip,
+              (c) complex/novel cyber query -> LLM with the adaptive
+              defensive prompt (concept layout vs incident triage).
+        - mode == 'normal': bypass cyber restrictions; general-assistant
+              prompt (trading, programming, everyday topics; English,
+              Roman Urdu, Urdu).
+  * MODEL PRIORITY: meta/llama-3.3-70b-instruct -> z-ai/glm-5.3 ->
+    the verified NVIDIA NIM fallback queue. Models answering 404/410
+    are quarantined for the process lifetime so a known-EOL model
+    costs at most one request.
+  * BYOK: user-supplied OpenAI / Anthropic keys (Settings modal ->
+    localStorage -> per-request body) are tried FIRST and never logged
+    or persisted server-side.
+  * GRACEFUL DEGRADATION: if every external provider fails, times out,
+    or returns 5xx/503, the local CyBOK knowledge engine answers
+    offline-capable queries so learning never stops.
+  * Lab chips: all inline "[CyberGPT Lab Recommendation: ...]" strings
+    are stripped server-side; up to 2 verified lab objects are returned
+    in the suggested_labs JSON array instead.
 """
 
 import os
@@ -33,16 +35,14 @@ import asyncio
 import logging
 import hashlib
 import threading
-from typing import Dict, List, Optional, Any, AsyncGenerator
-from dataclasses import dataclass, asdict, field
+from typing import Dict, List, Optional, Any, AsyncGenerator, Tuple
+from dataclasses import dataclass, field
 from enum import Enum
 from collections import deque
 
 import aiohttp
 from aiohttp import ClientTimeout, TCPConnector
 
-# Load .env here (app.py does not import config.py, so this is the module
-# that must surface NVIDIA_API_KEYS / NVIDIA_API_KEY to the key pool).
 try:
     from dotenv import load_dotenv
 
@@ -50,7 +50,10 @@ try:
 except Exception:  # pragma: no cover - dotenv optional
     pass
 
+from services.knowledge_engine import knowledge_engine, ENGINE_ID as CYBOK_ENGINE_ID
+
 logger = logging.getLogger(__name__)
+
 
 # ============================================================================
 # Persistent background event-loop bridge
@@ -159,68 +162,55 @@ class LLMResponse:
 
 
 # ============================================================================
-# NVIDIA NIM configuration
+# Provider configuration
 # ============================================================================
-NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"  # strict, never overridden
-CLIENT_TIMEOUT = 50.0  # strict 50s client timeout (mandated)
+NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1")
+ANTHROPIC_API_VERSION = "2023-06-01"
+CLIENT_TIMEOUT = 50.0  # strict 50s client timeout
 
 # ----------------------------------------------------------------------------
-# Verified NVIDIA NIM model identifiers (HTTP 200 confirmed via /v1/models
-# listing + live chat/completions probes). Anything NOT in these dicts is
-# never contacted: 410 (EOL) and 404 (not provisioned) models are excluded.
+# Model priority chain (INSTRUCTIONS.md §4.3):
+#   1. meta/llama-3.3-70b-instruct   (spec priority; EOL 410 on NIM as of
+#      live probe 2026-10 -> auto-quarantined for the process lifetime)
+#   2. z-ai/glm-5.3                  (spec priority; live-verified HTTP 200)
+#   3. NVIDIA verified fallback queue (HTTP 200 confirmed earlier)
 # ----------------------------------------------------------------------------
-TIER_MODELS: Dict[ModelTier, str] = {
-    ModelTier.FLASH: "nvidia/nemotron-3-super-120b-a12b",      # ~1.8s, fast MoE
-    ModelTier.BALANCED: "nvidia/nemotron-3-super-120b-a12b",   # clean 4-7 lines
-    ModelTier.PRO: "nvidia/nemotron-3-super-120b-a12b",        # 120B, 13-20 lines
-}
+PRIORITY_MODELS: List[str] = [
+    "meta/llama-3.3-70b-instruct",
+    "z-ai/glm-5.3",
+]
+
+NVIDIA_FALLBACK_MODELS: List[str] = [
+    "nvidia/nemotron-3-super-120b-a12b",
+    "openai/gpt-oss-20b",
+    "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "poolside/laguna-xs-2.1",
+]
 
 # Per-model payload extras, each verified live (HTTP 200 + clean content).
-# lightning-30b WITHOUT enable_thinking=false leaks its reasoning into the
-# visible reply ("Here's a thinking process: ..." 30+ lines), so it is only
-# ever served with thinking disabled.
 MODEL_PAYLOAD_EXTRAS: Dict[str, Dict[str, Any]] = {
+    # lightning-30b without enable_thinking=false dumps its chain-of-thought
+    # into the visible reply, so it is only ever served with thinking off.
     "nvidia/nemotron-3.5-lightning-30b-a3b": {
         "chat_template_kwargs": {"enable_thinking": False},
     },
-    # Caps gpt-oss latency (36-50s at default effort vs 19-34s at medium)
-    # whenever it serves as the deep-reasoning fallback. Verified HTTP 200 live.
+    # Caps gpt-oss latency (36-50s at default effort vs 19-34s at medium).
     "openai/gpt-oss-20b": {
         "reasoning_effort": "medium",
     },
 }
 
-# Per-tier failover queues. EVERY entry returned HTTP 200 during discovery.
-TIER_FAILOVER: Dict[ModelTier, List[str]] = {
-    ModelTier.FLASH: [
-        "openai/gpt-oss-20b",
-        "nvidia/nemotron-3.5-lightning-30b-a3b",
-        "poolside/laguna-xs-2.1",
-    ],
-    ModelTier.BALANCED: [
-        "openai/gpt-oss-20b",
-        "nvidia/nemotron-3.5-lightning-30b-a3b",
-        "poolside/laguna-xs-2.1",
-    ],
-    ModelTier.PRO: [
-        "openai/gpt-oss-20b",
-        "nvidia/nemotron-3.5-lightning-30b-a3b",
-        "poolside/laguna-xs-2.1",
-    ],
+# BYOK defaults (only used when the client supplies its own key).
+BYOK_DEFAULT_MODELS: Dict[str, str] = {
+    "openai": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+    "anthropic": os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest"),
 }
 
-# Single source of truth for the verified pool (HTTP 200 only).
-VERIFIED_MODELS: List[str] = [
-    "nvidia/nemotron-3-super-120b-a12b",
-    "nvidia/nemotron-3.5-lightning-30b-a3b",
-    "openai/gpt-oss-20b",
-    "poolside/laguna-xs-2.1",
-]
-
 # Strict token allocation per tier (enforced server-side via max_tokens).
-# Headroom included because the verified NIM models are reasoning models:
-# reasoning tokens are billed inside completion_tokens and would otherwise
-# truncate the visible answer (finish_reason=length).
+# Headroom included because reasoning models bill reasoning tokens inside
+# completion_tokens and would otherwise truncate the visible answer.
 TIER_MAX_TOKENS: Dict[ModelTier, int] = {
     ModelTier.FLASH: 500,     # 2-3 high-impact lines
     ModelTier.BALANCED: 1200,  # 4-7 lines: mechanics + detection
@@ -233,9 +223,10 @@ TIER_TEMPERATURE: Dict[ModelTier, float] = {
     ModelTier.PRO: 0.7,
 }
 
+
 def _load_key_pool() -> List[str]:
     """Load NVIDIA API keys from environment variables only.
-    
+
     No hardcoded defaults - keys must be provided via:
     - NVIDIA_API_KEYS (comma-separated list)
     - NVIDIA_API_KEY (single key)
@@ -249,9 +240,11 @@ def _load_key_pool() -> List[str]:
     single = os.getenv("NVIDIA_API_KEY", "").strip()
     if single and single not in keys:
         keys.append(single)
-    
+
     if not keys:
-        logger.warning("No NVIDIA API keys found in environment! Set NVIDIA_API_KEYS or NVIDIA_API_KEY")
+        logger.warning(
+            "No NVIDIA API keys found in environment! Set NVIDIA_API_KEYS or NVIDIA_API_KEY"
+        )
     return keys
 
 
@@ -295,59 +288,64 @@ class APIKeyPool:
 
 
 # ============================================================================
-# System prompts — strict line-count constraints per tier
+# System prompts — adaptive, tier-aware, pedagogically correct
 # ============================================================================
-SYSTEM_PROMPTS = {
-    ModelTier.FLASH: """You are CyberGPT Flash Tier - Rapid SOC Intelligence.
-OUTPUT CONSTRAINTS:
-- EXACTLY 2-3 LINES (hard limit). Each line must be a high-impact fact.
-- Count your lines before answering; NEVER exceed 3 lines.
-- NO fluff, NO intros, NO conclusions, NO preamble, NO thinking narration.
-- Format: bullet points or numbered facts only.
-- Target: 2-3 second mental parse time for the analyst.
-- If the user asks for a specific line count, honor it within 1-5 lines.""",
+CYBER_PREAMBLE = """You are CyberGPT, a defensive cybersecurity learning assistant and SOC
+operations simulator created by Muhammad Umair. You are pedagogical, authoritative yet
+accessible, structured, and empathetic. You natively understand English, Roman Urdu,
+and Urdu (with typo tolerance) and answer in the language the user writes.
 
-    ModelTier.BALANCED: """You are CyberGPT Balanced Tier - Vulnerability Mechanics & Detection.
-OUTPUT CONSTRAINTS:
-- EXACTLY 4-7 LINES (hard limit). Structure: Vulnerability mechanics (2-3 lines) + Detection/IoCs (2-3 lines) + One mitigation (1-2 lines).
-- Count your lines before answering; NEVER exceed 7 lines.
-- NO fluff, NO intros, NO conclusions, NO preamble, NO thinking narration.
-- Include specific Event IDs, registry keys, or CLI artifacts where applicable.
-- If the user asks for a specific line count, honor it within 4-10 lines.""",
+ADAPTIVE RESPONSE LAYOUT — follow this strictly:
+* If the question is a DEFINITION / CONCEPT / ARCHITECTURE question (e.g. "what is
+  zero trust", "explain the CIA triad", "how does TLS work"), answer with:
+  1. Plain-language definition & core purpose (include one everyday analogy).
+  2. Core pillars & principles.
+  3. Practical technical mechanics.
+  4. Real-world examples & industry standards.
+  NEVER force incident-triage headers (Vulnerability Mechanics / IoCs / Mitigation)
+  or arbitrary Event IDs onto concept questions.
+* If the question is INCIDENT / TELEMETRY TRIAGE (the user pasted logs, alerts,
+  Event IDs, IoCs, payloads, or asks how to DETECT or RESPOND to an attack),
+  answer with: vulnerability mechanics, specific detection telemetry (Windows
+  Event IDs, Sysmon IDs, registry keys, Sigma logic), and ranked mitigations.
+* If the user greets you or makes small talk, reply warmly in one or two short
+  sentences and offer what you can do; suggest switching to Normal mode for
+  non-security chat.
+* Never output placeholder text like [CyberGPT Lab Recommendation: ...]; the
+  platform appends real lab chips itself.
+"""
 
-    ModelTier.PRO: """You are CyberGPT Pro Tier - Executive SOC Briefing.
-OUTPUT CONSTRAINTS:
-- EXACTLY 13-20 LINES (hard limit). Count your lines; if you approach 20, merge bullets — NEVER exceed 20 lines. Mandatory sections:
-  1. EXECUTIVE OVERVIEW (2-3 lines): Business impact, threat actor profile, blast radius.
-  2. UNDER-THE-HOOD MECHANICS (4-5 lines): Root cause, exploit chain, privilege escalation path.
-  3. EVENT IDs / IoCs / SIGMA RULES (3-4 lines): Specific Sysmon/Windows IDs, file hashes, IPs, domains, YARA/Sigma snippets.
-  4. HARDENED CODE / CONFIG (2-3 lines): Before/after code blocks or registry/policy changes.
-  5. SOC PRO-TIPS (2-3 lines): Detection logic, hunting queries, containment playbook steps.
-- NO fluff, NO preamble, NO thinking narration. Dense, actionable, citation-ready.
-- If the user asks for a specific line count, honor it within 10-25 lines.""",
+NORMAL_PREAMBLE = """You are CyberGPT in Normal mode: a comprehensive, friendly general-purpose
+AI assistant created by Muhammad Umair. All topic restrictions from Cyber mode are
+lifted here. You confidently help with everyday questions, cooking, movies, travel,
+stock and crypto trading concepts (educational explanations only, never personalized
+financial advice), programming, mathematics, history, health basics, writing, and
+anything else — in English, Roman Urdu, or Urdu, matching the user's language.
+Be structured, warm, and genuinely useful. For personalized financial, medical, or
+legal decisions, remind the user to consult a licensed professional.
+"""
+
+TIER_GUIDANCE: Dict[ModelTier, str] = {
+    ModelTier.FLASH: (
+        "LENGTH: 2-3 short lines maximum — high-impact facts only, no preamble."
+    ),
+    ModelTier.BALANCED: (
+        "LENGTH: 4-7 lines. Concept answers: definition + pillars + one example. "
+        "Incident answers: mechanics + detection + one mitigation."
+    ),
+    ModelTier.PRO: (
+        "LENGTH: 13-20 lines. Concept answers: full adaptive layout with analogy. "
+        "Incident answers: executive overview, mechanics, IoCs/Event IDs, hardening "
+        "config, and SOC hunting tips. Dense, citation-ready, no filler."
+    ),
 }
 
-# Smart cross-referencing: append lab recommendations for these topics.
-CROSS_REF_TRIGGERS = {
-    "phishing": "Phishing Lab",
-    "pass-the-hash": "SOC Drills",
-    "kerberoasting": "SOC Drills",
-    "sql injection": "SOC Drills",
-    "powershell": "SOC Drills",
-    "cloud": "SOC Drills",
-    "oauth": "Phishing Lab",
-    "quishing": "Phishing Lab",
-    "rdp": "SOC Drills",
-    "psexec": "SOC Drills",
-    "s3": "SOC Drills",
-    "aws": "SOC Drills",
-    "cloudtrail": "SOC Drills",
-    "brute-force": "SOC Drills",
-    "brute force": "SOC Drills",
-    "lateral movement": "SOC Drills",
-}
 
-LAB_RECOMMENDATION_TEMPLATE = "\n[CyberGPT Lab Recommendation: Test your skills live in {lab_name}]"
+def build_system_prompt(tier: ModelTier, mode: str) -> str:
+    """Compose the tier- and mode-aware system prompt."""
+    if mode == "normal":
+        return NORMAL_PREAMBLE + "\n" + TIER_GUIDANCE[tier]
+    return CYBER_PREAMBLE + "\n" + TIER_GUIDANCE[tier]
 
 
 # ============================================================================
@@ -363,7 +361,7 @@ def sanitize_messages(messages: List[Dict[str, str]], max_chars: int = 12000) ->
             continue
         # Neutralize template/HTML injection patterns.
         content = content.replace("{{", "&#123;&#123;").replace("}}", "&#125;&#125;")
-        content = content.replace("<script", "&lt;script").replace("</script", "&lt;/script")
+        content = content.replace("<script", "<script").replace("</script", "</script")
         if total_chars + len(content) > max_chars:
             content = content[-(max_chars - total_chars):]
             sanitized.insert(0, {"role": msg.get("role", "user"), "content": content})
@@ -376,17 +374,6 @@ def sanitize_messages(messages: List[Dict[str, str]], max_chars: int = 12000) ->
 def count_tokens_estimate(text: str) -> int:
     """Rough token estimation: ~4 chars per token for English."""
     return max(1, len(text) // 4)
-
-
-def inject_lab_recommendations(content: str) -> str:
-    """Inject cross-referenced lab recommendations based on content keywords."""
-    content_lower = content.lower()
-    injected = set()
-    for trigger, lab in CROSS_REF_TRIGGERS.items():
-        if trigger in content_lower and lab not in injected:
-            content += LAB_RECOMMENDATION_TEMPLATE.format(lab_name=lab)
-            injected.add(lab)
-    return content
 
 
 def _coerce_tier(tier: Any) -> ModelTier:
@@ -403,10 +390,10 @@ def _coerce_tier(tier: Any) -> ModelTier:
 def _extract_content(message: Dict[str, Any]) -> str:
     """Pull the visible answer out of a chat message.
 
-    Reasoning models (gpt-oss, Nemotron-3.x) return their chain-of-thought in
-    a separate `reasoning_content` field, but with a tight token budget the
-    visible `content` can come back null. Never expose reasoning text as the
-    reply; return "" so the caller can fail over instead of crashing.
+    Reasoning models (gpt-oss, GLM, Nemotron-3.x) may return their
+    chain-of-thought in a separate `reasoning_content` field. Never expose
+    reasoning text as the reply; return "" so the caller can fail over
+    instead of surfacing an empty or leaking answer.
     """
     content = message.get("content")
     if isinstance(content, str) and content.strip():
@@ -424,15 +411,258 @@ def _extract_content(message: Dict[str, Any]) -> str:
     return ""
 
 
+def _strip_lab_recommendations(text: str) -> str:
+    """Remove inline CyberGPT Lab Recommendation strings from response text.
+
+    Pattern: [CyberGPT Lab Recommendation: Test your skills live in ...]
+    These are never shown to users; real lab chips travel via the
+    suggested_labs JSON array instead.
+    """
+    return re.sub(r"\[CyberGPT Lab Recommendation:.*?\]", "", text).strip()
+
+
+def _extract_suggested_labs(message: str, max_labs: int = 2) -> List[Dict[str, str]]:
+    """Keyword-score the real lab catalog for up to `max_labs` chips."""
+    lower = (message or "").lower()
+    chosen: List[Dict[str, str]] = []
+    scored: List[Tuple[float, str]] = []
+    # Import lazily to avoid module-level cycles (scenario_manager is safe).
+    from services.scenario_manager import LAB_REPOSITORY
+
+    for lab_id, lab in LAB_REPOSITORY.items():
+        title = lab.get("title", "").lower()
+        category = lab.get("category", "").lower()
+        objectives = " ".join(lab.get("learning_objectives", [])).lower()
+        haystack = f"{title} {category} {objectives}"
+        score = 0.0
+        # Weighted token overlap on meaningful words.
+        for token in lower.split():
+            if len(token) > 3 and token in haystack:
+                score += 1.0
+        # Category anchor bonus.
+        for cat_token in category.lower().replace("/", " ").split():
+            if len(cat_token) > 3 and cat_token in lower:
+                score += 2.0
+        if score > 0:
+            scored.append((score, lab_id))
+    scored.sort(key=lambda pair: (-pair[0], pair[1]))
+    for _, lab_id in scored:
+        lab = LAB_REPOSITORY[lab_id]
+        chosen.append({
+            "id": lab["id"],
+            "title": lab.get("title", lab["id"]),
+            "category": lab.get("category", "General"),
+        })
+        if len(chosen) >= max_labs:
+            break
+    return chosen
+
+
+# ============================================================================
+# Intent routing (INSTRUCTIONS.md §4.1)
+# ============================================================================
+class Intent(Enum):
+    META_IDENTITY = "meta_identity"
+    OFF_TOPIC = "off_topic"
+    GREETINGS = "greetings"
+    GENERAL_CHAT = "general_chat"
+
+
+@dataclass
+class IntentResult:
+    intent: Intent
+    direct_response: Optional[str] = None
+    action: Optional[str] = None  # e.g., "switch_mode"
+    suggested_labs: List[Dict[str, str]] = field(default_factory=list)
+
+
+# Step 1 — identity & meta anchors (case-insensitive, multilingual).
+# A query is identity ONLY when the whole utterance is an identity question;
+# mentioning security concepts disqualifies it (regression guard).
+_IDENTITY_ANCHORS: List[str] = [
+    "who are you",
+    "who r u",
+    "what is your name",
+    "whats your name",
+    "what's your name",
+    "who made you",
+    "who created you",
+    "who designed you",
+    "who developed you",
+    "who is your developer",
+    "who is your developer muhammad umair",
+    "who is your creator",
+    "who built you",
+    "what are you",
+    "whatare you",
+    "introduce yourself",
+    "your name",
+    "tera naam",
+    "tera name",
+    "tera naam kya hai",
+    "kiska bot ho",
+    "kis ka bot ho",
+    "kisne banaya",
+    "kis ne banaya",
+    "tum kaun ho",
+    "tumhara naam",
+    "ap kaun hain",
+    "aap kaun hain",
+    "who is muhammad umair",
+    "who is your owner",
+]
+
+_IDENTITY_RE = re.compile(
+    r"^\s*(?:who\s+are\s+you|what(?:'s| is|s)\s+your\s+name|whats\s+your\s+name|"
+    r"who\s+made\s+you|who\s+created\s+you|who\s+designed\s+you|who\s+developed\s+you|"
+    r"who\s+is\s+your\s+(?:developer|creator|owner|maker|builder)|who\s+built\s+you|"
+    r"what\s+are\s+you|introduce\s+yourself|"
+    r"tera\s+naam(?:\s+kya\s+hai)?|tera\s+name|kis(?:ka|\s+ka)\s+bot\s+ho|"
+    r"kis(?:ne|\s+ne)\s+banaya|tum\s+kaun\s+ho|tumhara\s+naam|"
+    r"aap\s+kaun\s+hain|ap\s+kaun\s+hain|who\s+is\s+muhammad\s+umair)"
+    r"\s*[?.!]*\s*$",
+    re.IGNORECASE,
+)
+
+# Security-concept guard: if these appear, the query is technical, not identity.
+_IDENTITY_GUARD: List[str] = [
+    "zero trust", "sql injection", "xss", "firewall", "malware", "phishing",
+    "ransomware", "kerberos", "tls", "encryption", "event id", "siem",
+]
+
+# Step 2 — unambiguous off-topic anchors for Cyber mode. Deliberately NARROW:
+# technical cyber queries must never be classified off-topic.
+_OFFTOPIC_PATTERNS: List[str] = [
+    "cooking", "recipe", "cook ", "biryani recipe", "pizza recipe", "cake recipe",
+    "movies", "film review", "actor biography", "celebrity gossip",
+    "stock trading", "stock market", "day trading", "forex", "share market",
+    "crypto trading", "bitcoin price", "trading tips", "trading strategy",
+    "cricket score", "football match", "soccer match", "basketball game",
+    "song lyrics", "music playlist", "concert tickets",
+    "vacation packages", "hotel booking", "tourist places",
+    "fashion trends", "clothing brand",
+    "gaming console", "game cheats", "game walkthrough",
+]
+
+_OFFTOPIC_EXACT: List[str] = [
+    "trading", "stocks", "cooking", "movies", "cricket", "football", "soccer",
+    "basketball", "biryani", "pizza", "recipe", "songs", "music", "movies",
+    "netflix", "vacation", "travel", "fashion", "gaming", "games",
+]
+
+_GREETING_PATTERNS: List[str] = [
+    "hello", "hi there", "hey there", "good morning", "good afternoon",
+    "good evening", "assalam o alaikum", "assalamualaikum", "salaam",
+    "asalam o alikum", "kya haal hai", "how are you", "sup?", "whats up",
+    "what's up", "namaste", "sat sri akal",
+]
+
+# Question scaffolding stripped before the off-topic topic match.
+_TOPIC_STOP_RE = re.compile(
+    r"^(?:what|whats|what|is|are|was|were|the|a|an|explain|define|described|describe|"
+    r"tell|me|about|how|why|do|does|did|can|could|would|should|please|plz|"
+    r"kya|kia|hota|hai|ye|this|that|some|any|difference|between|diff|give|of|on|in|"
+    r"for|to|and|vs|versus|best|good|any)\s+",
+    re.IGNORECASE,
+)
+
+
+def _topic_of(flat: str) -> str:
+    """Strip question scaffolding iteratively to expose the bare topic."""
+    topic = flat
+    for _ in range(12):
+        new = _TOPIC_STOP_RE.sub("", topic).strip()
+        if new == topic:
+            break
+        topic = new
+    return topic
+
+
+def _norm_flat(text: str) -> str:
+    """Lowercase, punctuation-stripped, whitespace-collapsed copy."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", (text or "").lower())).strip()
+
+
+def classify_intent(message: str, mode: str = "cyber") -> IntentResult:
+    """Classify user message intent for routing decisions.
+
+    Strict order (INSTRUCTIONS.md §4.1):
+      1. META_IDENTITY — exact identity anchors only.
+      2. mode == 'normal' — GENERAL_CHAT straight to the LLM.
+      3. mode == 'cyber' — off-topic only for unambiguous non-cyber topics.
+      4. Fail-safe — GENERAL_CHAT (LLM decides).
+    """
+    lower = (message or "").lower().strip()
+    flat = _norm_flat(message)
+
+    # --- 1. Identity & meta (bypasses everything, both modes) ---
+    if _IDENTITY_RE.match(lower) or flat in _IDENTITY_ANCHORS:
+        # Guard: a query that also names security concepts is technical.
+        if not any(g in lower for g in _IDENTITY_GUARD):
+            return IntentResult(
+                intent=Intent.META_IDENTITY,
+                direct_response=(
+                    "I'm **CyberGPT** — a Defensive Cyber Intelligence & SOC Operations "
+                    "Simulator designed and developed by **Muhammad Umair**. I teach "
+                    "defensive security through CyBOK v1.1.0 concept guides, hands-on "
+                    "scenario labs, SIEM-style log drills, and password hardening audits. "
+                    "Ask me anything about security — or switch to Normal mode for "
+                    "general topics."
+                ),
+            )
+
+    # --- 2. Normal mode: no cyber restrictions at all ---
+    if mode == "normal":
+        return IntentResult(intent=Intent.GENERAL_CHAT)
+
+    # --- 3. Cyber mode: unambiguous off-topic -> notice + switch chip ---
+    topic = _topic_of(flat)
+    is_offtopic = (
+        topic in _OFFTOPIC_EXACT
+        or any(p in lower + " " for p in _OFFTOPIC_PATTERNS)
+        or any(p in topic + " " for p in _OFFTOPIC_PATTERNS)
+    )
+    if is_offtopic:
+        return IntentResult(
+            intent=Intent.OFF_TOPIC,
+            direct_response=(
+                "That one is outside my Cyber mode focus — I specialize in defensive "
+                "cybersecurity. Switch to Normal mode and ask again for a full answer."
+            ),
+            action="switch_mode",
+        )
+
+    # --- 4. Greetings in Cyber mode: short, warm, helpful ---
+    first_words = " ".join(lower.split()[:4])
+    if any(g in first_words for g in _GREETING_PATTERNS) and len(lower.split()) <= 5:
+        return IntentResult(
+            intent=Intent.GREETINGS,
+            direct_response=(
+                "Hello! I'm CyberGPT, your defensive security mentor. Try 'what is "
+                "zero trust', paste some log telemetry to triage, or ask about any "
+                "CyBOK topic — and switch to Normal mode anytime for general chat."
+            ),
+        )
+
+    # --- Fail-safe: route to the LLM with the adaptive defensive prompt ---
+    return IntentResult(intent=Intent.GENERAL_CHAT)
+
+
 # ============================================================================
 # LLM Service
 # ============================================================================
 class LLMService:
+    """Dual-mode chat orchestration with BYOK + resilient failover."""
+
     def __init__(self):
         self.session: Optional[aiohttp.ClientSession] = None
         self.token_history: deque = deque(maxlen=100)
         self.session_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
         self.key_pool = APIKeyPool(_load_key_pool())
+        # Models that answered 404/410 (not provisioned / EOL) are skipped for
+        # the remainder of the process lifetime — a known-dead model costs at
+        # most ONE request, keeping the priority chain responsive.
+        self._dead_models: set = set()
         # NOTE: The aiohttp session is created lazily inside the async event
         # loop (aiohttp's TCPConnector requires a running loop). Do NOT create
         # it here at module-import time.
@@ -450,17 +680,16 @@ class LLMService:
             await self.session.close()
             self.session = None
 
+    # ------------------------------------------------------------------
+    # Payload builders
+    # ------------------------------------------------------------------
     def _build_payload(
-        self, messages: List[Dict[str, str]], tier: ModelTier, model_id: str
+        self, system_prompt: str, messages: List[Dict[str, str]], tier: ModelTier, model_id: str
     ) -> Dict[str, Any]:
-        system_prompt = SYSTEM_PROMPTS[tier]
         max_tokens = TIER_MAX_TOKENS[tier]
-
         user_content = " ".join(m.get("content", "") for m in messages if m.get("role") == "user")
 
         # Honor explicit user-requested line counts if provided in the prompt.
-        # +400 tokens of headroom: the verified NIM models reason before they
-        # answer, and reasoning tokens count against max_tokens.
         line_match = re.search(r"(\d+)\s*lines?", user_content, re.IGNORECASE)
         if line_match:
             requested_lines = int(line_match.group(1))
@@ -468,22 +697,47 @@ class LLMService:
 
         payload: Dict[str, Any] = {
             "model": model_id,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                *messages,
-            ],
+            "messages": [{"role": "system", "content": system_prompt}, *messages],
             "max_tokens": max_tokens,
             "temperature": TIER_TEMPERATURE[tier],
             "top_p": 0.9,
             "stream": False,
         }
-        # Per-model verified extras (e.g. disable lightning's thinking dump).
         payload.update(MODEL_PAYLOAD_EXTRAS.get(model_id, {}))
         return payload
 
-    async def _call_model(
+    # ------------------------------------------------------------------
+    # Provider calls
+    # ------------------------------------------------------------------
+    def _usage_from_response(self, data: Dict[str, Any], payload: Dict[str, Any], raw: str) -> TokenUsage:
+        usage = data.get("usage", {}) or {}
+        token_usage = TokenUsage(
+            prompt_tokens=usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0,
+            completion_tokens=usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0,
+            total_tokens=usage.get("total_tokens", 0) or 0,
+        )
+        if token_usage.total_tokens == 0:
+            prompt_est = count_tokens_estimate(str(payload.get("messages", payload.get("system", ""))))
+            comp_est = count_tokens_estimate(raw)
+            token_usage.prompt_tokens = prompt_est
+            token_usage.completion_tokens = comp_est
+            token_usage.total_tokens = prompt_est + comp_est
+        return token_usage
+
+    def _record_success(self, model_id: str, tier: ModelTier, tokens: int) -> None:
+        self.token_history.append(
+            {
+                "timestamp": time.time(),
+                "model": model_id,
+                "tier": tier.value,
+                "tokens": tokens,
+            }
+        )
+
+    async def _call_nim(
         self, model_id: str, payload: Dict[str, Any], tier: ModelTier, api_key: str
     ) -> LLMResponse:
+        """Call a model on the NVIDIA NIM endpoint (OpenAI-compatible)."""
         start = time.perf_counter()
         session = self._ensure_session()
         try:
@@ -500,6 +754,9 @@ class LLMService:
                 if resp.status != 200:
                     error_text = await resp.text()
                     logger.error(f"{model_id} HTTP {resp.status}: {error_text[:200]}")
+                    if resp.status in (404, 410):
+                        # Model not provisioned / EOL — never pay for it again.
+                        self._dead_models.add(model_id)
                     return LLMResponse(
                         content="",
                         model_used=model_id,
@@ -522,11 +779,8 @@ class LLMService:
                         success=False,
                         error="HTTP 200 but empty choices",
                     )
-
                 raw_content = _extract_content(choices[0].get("message") or {})
                 if not raw_content:
-                    # Reasoning budget exhausted -> null content. Fail over
-                    # instead of surfacing an empty reply.
                     finish = choices[0].get("finish_reason")
                     logger.error(f"{model_id} empty content (finish_reason={finish})")
                     return LLMResponse(
@@ -538,31 +792,9 @@ class LLMService:
                         success=False,
                         error=f"empty content (finish_reason={finish})",
                     )
-
-                usage = data.get("usage", {}) or {}
-                token_usage = TokenUsage(
-                    prompt_tokens=usage.get("prompt_tokens", 0),
-                    completion_tokens=usage.get("completion_tokens", 0),
-                    total_tokens=usage.get("total_tokens", 0),
-                )
-                if token_usage.total_tokens == 0:
-                    prompt_est = count_tokens_estimate(str(payload["messages"]))
-                    comp_est = count_tokens_estimate(raw_content)
-                    token_usage.prompt_tokens = prompt_est
-                    token_usage.completion_tokens = comp_est
-                    token_usage.total_tokens = prompt_est + comp_est
-
-                content = inject_lab_recommendations(raw_content)
-
-                self.token_history.append(
-                    {
-                        "timestamp": time.time(),
-                        "model": model_id,
-                        "tier": tier.value,
-                        "tokens": token_usage.total_tokens,
-                    }
-                )
-
+                token_usage = self._usage_from_response(data, payload, raw_content)
+                content = _strip_lab_recommendations(raw_content)
+                self._record_success(model_id, tier, token_usage.total_tokens)
                 return LLMResponse(
                     content=content.strip(),
                     model_used=model_id,
@@ -575,274 +807,297 @@ class LLMService:
             latency_ms = (time.perf_counter() - start) * 1000
             logger.error(f"{model_id} timeout after {latency_ms:.0f}ms (limit {CLIENT_TIMEOUT}s)")
             return LLMResponse(
-                content="",
-                model_used=model_id,
-                tier=tier,
-                token_usage=TokenUsage(),
-                latency_ms=latency_ms,
-                success=False,
+                content="", model_used=model_id, tier=tier, token_usage=TokenUsage(),
+                latency_ms=latency_ms, success=False,
                 error=f"Request timeout ({CLIENT_TIMEOUT:.0f}s)",
             )
         except Exception as e:
             latency_ms = (time.perf_counter() - start) * 1000
             logger.error(f"{model_id} exception: {e}")
             return LLMResponse(
-                content="",
-                model_used=model_id,
-                tier=tier,
-                token_usage=TokenUsage(),
-                latency_ms=latency_ms,
-                success=False,
+                content="", model_used=model_id, tier=tier, token_usage=TokenUsage(),
+                latency_ms=latency_ms, success=False, error=str(e)[:200],
+            )
+
+    async def _call_openai(
+        self, api_key: str, system_prompt: str, messages: List[Dict[str, str]], tier: ModelTier,
+        model: Optional[str] = None,
+    ) -> LLMResponse:
+        """BYOK: call api.openai.com directly with the user's own key."""
+        model_id = (model or BYOK_DEFAULT_MODELS["openai"]).strip()
+        start = time.perf_counter()
+        session = self._ensure_session()
+        payload = {
+            "model": model_id,
+            "messages": [{"role": "system", "content": system_prompt}, *messages],
+            "max_tokens": TIER_MAX_TOKENS[tier],
+            "temperature": TIER_TEMPERATURE[tier],
+        }
+        try:
+            async with session.post(
+                f"{OPENAI_BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            ) as resp:
+                latency_ms = (time.perf_counter() - start) * 1000
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    logger.error(f"BYOK openai {model_id} HTTP {resp.status}")
+                    return LLMResponse(
+                        content="", model_used=f"byok-openai/{model_id}", tier=tier,
+                        token_usage=TokenUsage(), latency_ms=latency_ms, success=False,
+                        error=f"HTTP {resp.status}: {error_text[:200]}",
+                    )
+                data = await resp.json()
+                choices = data.get("choices") or []
+                raw_content = _extract_content(choices[0].get("message") or {}) if choices else ""
+                if not raw_content:
+                    return LLMResponse(
+                        content="", model_used=f"byok-openai/{model_id}", tier=tier,
+                        token_usage=TokenUsage(), latency_ms=latency_ms, success=False,
+                        error="empty content from OpenAI",
+                    )
+                token_usage = self._usage_from_response(data, payload, raw_content)
+                content = _strip_lab_recommendations(raw_content)
+                self._record_success(f"byok-openai/{model_id}", tier, token_usage.total_tokens)
+                return LLMResponse(
+                    content=content.strip(), model_used=f"byok-openai/{model_id}", tier=tier,
+                    token_usage=token_usage, latency_ms=latency_ms, success=True,
+                )
+        except Exception as e:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.error(f"BYOK openai exception: {e}")
+            return LLMResponse(
+                content="", model_used=f"byok-openai/{model_id}", tier=tier,
+                token_usage=TokenUsage(), latency_ms=latency_ms, success=False,
                 error=str(e)[:200],
             )
 
-    def _failover_plan(self, tier: ModelTier) -> List[str]:
-        """Ordered, de-duplicated model queue for a tier.
-
-        Only verified HTTP-200 models appear anywhere in the plan; the dead
-        410/404 models from the old pool are gone entirely.
-        """
-        plan: List[str] = []
-        for model_id in [TIER_MODELS[tier], *TIER_FAILOVER[tier]]:
-            if model_id not in plan:
-                plan.append(model_id)
-        # Last resort: other tiers' primaries (still verified-200), so a
-        # single-model outage degrades gracefully instead of failing.
-        for t in ModelTier:
-            primary = TIER_MODELS[t]
-            if primary not in plan:
-                plan.append(primary)
-        for model_id in VERIFIED_MODELS:
-            if model_id not in plan:
-                plan.append(model_id)
-        return plan
-
-    async def chat(
-        self, messages: List[Dict[str, str]], tier: ModelTier = ModelTier.BALANCED, mode: str = "cyber"
+    async def _call_anthropic(
+        self, api_key: str, system_prompt: str, messages: List[Dict[str, str]], tier: ModelTier,
+        model: Optional[str] = None,
     ) -> LLMResponse:
-        """Main entry point with NVIDIA NIM model + key failover chain.
-
-        The REQUESTED tier's system prompt, line rules and token cap are
-        applied to every attempt — a Flash request never comes back as a
-        13-20 line Pro briefing just because it failed over.
-
-        Failover order:
-          1. The tier's designated NIM model.
-          2. The tier's verified fallback queue.
-          3. The remaining verified NIM models.
-        For each model, every available nvapi- key is tried; 401/403 keys are
-        quarantined and rotated out of the pool.
-        """
-        tier = _coerce_tier(tier)
-        sanitized = sanitize_messages(messages)
-        
-        # ---- Intent Classification ----
-        # Classify user intent before reaching the LLM failover chain.
-        # This allows certain query types to bypass the model entirely,
-        # ensuring consistent, factual responses and avoiding template misuse.
-        first_user_msg = ""
-        for msg in messages:
-            if msg.get("role") == "user":
-                first_user_msg = msg.get("content", "")
-                break
-        intent_result = _classify_intent(first_user_msg, mode)
-
-        # Handle META_IDENTITY: return direct natural response
-        if intent_result.intent == Intent.META_IDENTITY:
+        """BYOK: call api.anthropic.com directly with the user's own key."""
+        model_id = (model or BYOK_DEFAULT_MODELS["anthropic"]).strip()
+        start = time.perf_counter()
+        session = self._ensure_session()
+        # Anthropic Messages API shape: system is top-level; roles user/assistant.
+        convo = [{"role": m["role"], "content": m["content"]}
+                 for m in messages if m.get("role") in ("user", "assistant")]
+        payload = {
+            "model": model_id,
+            "system": system_prompt,
+            "messages": convo,
+            "max_tokens": TIER_MAX_TOKENS[tier],
+            "temperature": TIER_TEMPERATURE[tier],
+        }
+        try:
+            async with session.post(
+                f"{ANTHROPIC_BASE_URL}/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": ANTHROPIC_API_VERSION,
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            ) as resp:
+                latency_ms = (time.perf_counter() - start) * 1000
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    logger.error(f"BYOK anthropic {model_id} HTTP {resp.status}")
+                    return LLMResponse(
+                        content="", model_used=f"byok-anthropic/{model_id}", tier=tier,
+                        token_usage=TokenUsage(), latency_ms=latency_ms, success=False,
+                        error=f"HTTP {resp.status}: {error_text[:200]}",
+                    )
+                data = await resp.json()
+                raw_content = _extract_content({"content": data.get("content", [])})
+                if not raw_content:
+                    raw_content = str(data.get("content", "") or "")
+                    if isinstance(data.get("content"), list):
+                        raw_content = "\n".join(
+                            str(b.get("text", "")) for b in data["content"]
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                if not raw_content.strip():
+                    return LLMResponse(
+                        content="", model_used=f"byok-anthropic/{model_id}", tier=tier,
+                        token_usage=TokenUsage(), latency_ms=latency_ms, success=False,
+                        error="empty content from Anthropic",
+                    )
+                token_usage = self._usage_from_response(data, payload, raw_content)
+                content = _strip_lab_recommendations(raw_content)
+                self._record_success(f"byok-anthropic/{model_id}", tier, token_usage.total_tokens)
+                return LLMResponse(
+                    content=content.strip(), model_used=f"byok-anthropic/{model_id}", tier=tier,
+                    token_usage=token_usage, latency_ms=latency_ms, success=True,
+                )
+        except Exception as e:
+            latency_ms = (time.perf_counter() - start) * 1000
+            logger.error(f"BYOK anthropic exception: {e}")
             return LLMResponse(
-                content=intent_result.direct_response
-                or "I'm CyberGPT, a defensive cybersecurity learning assistant developed by Muhammad Umair. How can I assist your security studies today?",
-                model_used="cybergpt-meta",
-                tier=tier,
-                token_usage=TokenUsage(),
-                latency_ms=0,
-                success=True,
-                suggested_labs=intent_result.suggested_labs or [],
+                content="", model_used=f"byok-anthropic/{model_id}", tier=tier,
+                token_usage=TokenUsage(), latency_ms=latency_ms, success=False,
+                error=str(e)[:200],
             )
 
-        # Handle CONCEPTS: plain definition + why it matters + core components
-        if intent_result.intent == Intent.CONCEPTS:
-            section = intent_result.section_name or "concept"
-            if section == "concept":
-                # Build a clean concept response without Event IDs or inline lab strings
-                msg = messages[0]["content"] if messages else ""
-                # Strip any existing [CyberGPT Lab Recommendation:...] strings
-                clean = re.sub(r'\[CyberGPT Lab Recommendation:.*?\]', '', msg).strip()
-                # Remove any raw Event ID references that might leak
-                clean = re.sub(r'Event ID \d+', 'Event ID [removed]', clean)
-                clean = re.sub(r'\b4776\b', 'Event ID [removed]', clean)
-                # Remove any CLI command references unless explicitly requested
-                clean = re.sub(r'\b(?:cmd\.exe|powershell|bash):?\s*', '', clean)
-                # Ensure no inline bracketed lab strings remain
-                clean = re.sub(r'\[.*?\]', '', clean).strip()
-                
-                # Build dynamic concept response based on the query
-                lower = clean.lower()
-                lines = []
-                
-                if "what is cyber security" in lower or "what is information security" in lower:
-                    lines.append(f"Cybersecurity (or Information Security) is the practice of protecting systems, networks, and data from digital attacks, unauthorized access, and damage.")
-                    lines.append(f"It matters because modern organizations rely on digital assets — breaches cause financial loss, reputational harm, regulatory fines, and operational disruption.")
-                    lines.append(f"Core domains: Network Security (firewalls, IDS/IPS, segmentation), Endpoint Security (EDR, patching, hardening), Application Security (SAST/DAST, WAF, secure coding), Identity & Access (MFA, PAM, Zero Trust), Cloud Security (CSPM, CIEM, workload protection), Data Security (encryption, DLP, classification), Incident Response (detection, containment, recovery).")
-                    lines.append(f"Frameworks: NIST CSF, ISO 27001, CIS Controls, MITRE ATT&CK. These provide structure for building and measuring a security program.")
-                elif "zero trust" in lower:
-                    lines.append(f"Zero Trust is a security concept that assumes no user or device should be trusted by default, whether inside or outside the network perimeter.")
-                    lines.append(f"It matters because traditional perimeter-based security cannot protect against lateral movement and insider threats; Zero Trust enforces continuous verification.")
-                    lines.append(f"Core components include: explicit verification of identity and context, least-privilege access, and continuous monitoring and validation of all assets.")
-                    lines.append(f"Example: Instead of automatically allowing all traffic from the corporate network, Zero Trust requires device health checks and user authentication before granting access to each application service.")
-                elif "cia triad" in lower or "confidentiality integrity availability" in lower:
-                    lines.append(f"The CIA Triad is the foundational model for information security: Confidentiality, Integrity, and Availability.")
-                    lines.append(f"Confidentiality ensures only authorized access; Integrity protects data from unauthorized modification; Availability guarantees systems are accessible when needed.")
-                    lines.append(f"All security controls map to at least one of these three pillars — a control failing to address any is incomplete.")
-                    lines.append(f"Example: Encryption protects Confidentiality; Hashing + signatures protect Integrity; Redundancy + backups protect Availability.")
-                elif "defense in depth" in lower:
-                    lines.append(f"Defense in Depth is a layered security strategy where multiple defensive mechanisms protect assets, so if one layer fails, others still provide protection.")
-                    lines.append(f"It matters because no single control is perfect — perimeter, network, host, application, and data layers each need their own controls.")
-                    lines.append(f"Layers: Perimeter (firewall) → Network (IDS/IPS, segmentation) → Endpoint (EDR, patching) → Application (WAF, input validation) → Data (encryption, DLP).")
-                    lines.append(f"Example: An attacker breaches the firewall but is caught by EDR, then blocked by application WAF, and data remains encrypted.")
-                elif "pass the hash" in lower or "pth" in lower:
-                    lines.append(f"Pass-the-Hash (PtH) is a lateral movement technique where an attacker reuses a captured NTLM hash to authenticate to remote systems without knowing the plaintext password.")
-                    lines.append(f"It matters because NTLM hashes can be extracted from LSASS memory (Mimikatz, sekurlsa) and reused — the password itself is never needed.")
-                    lines.append(f"Key indicators: Event ID 4624 LogonType 3 (Network) with AuthenticationPackage NTLM; PsExec service (PSEXESVC) installs via Event ID 7045; ADMIN$ share writes.")
-                    lines.append(f"Mitigation: Enforce Kerberos (disable NTLM where possible), use LAPS for local admin passwords, restrict ADMIN$ access, monitor for NTLM use in privileged contexts.")
-                elif "kerberoasting" in lower:
-                    lines.append(f"Kerberoasting is a credential access technique where any domain user requests Kerberos service tickets (TGS) for SPNs and requests weak RC4 (0x17) encryption to crack the hash offline.")
-                    lines.append(f"It matters because service account hashes (especially with RC4) can be cracked in hours/days, yielding plaintext passwords for privileged accounts.")
-                    lines.append(f"Key indicators: Event ID 4769 spike with TicketEncryptionType 0x17 (RC4-HMAC); tools like Rubeus.exe in memory; high TGS request volume from single user.")
-                    lines.append(f"Mitigation: Disable RC4 in domain (msDS-SupportedEncryptionTypes), use gMSAs for service accounts, enforce AES-only, monitor 4769 anomalies.")
-                elif "golden ticket" in lower:
-                    lines.append(f"Golden Ticket is a forged Kerberos TGT (Ticket Granting Ticket) created using the KRBTGT account's hash, allowing unlimited-lifetime authentication as any user in the domain.")
-                    lines.append(f"It matters because the KRBTGT hash signs ALL TGTs — compromising it means total domain compromise that survives password resets.")
-                    lines.append(f"Key indicators: 4624 LogonType 3 with 10-year TGT lifetime; 4768 TGT requests for non-existent users; Mimikatz 'kerberos::golden' artifacts.")
-                    lines.append(f"Mitigation: Rotate KRBTGT password TWICE (per Microsoft guidance), monitor for anomalous TGT lifetimes, restrict KRBTGT replication rights.")
-                elif "dcsync" in lower:
-                    lines.append(f"DCSync is a credential dumping technique where an attacker with replication rights (DS-Replication-Get-Changes-All) uses the directory replication protocol (MS-DRSR) to pull password hashes from a domain controller — without being a DC.")
-                    lines.append(f"It matters because any principal with replication rights can extract all domain credentials, including KRBTGT, enabling Golden Tickets.")
-                    lines.append(f"Key indicators: Event ID 4662 with DS-Replication-Get-Changes-All GUID on a non-DC host; Mimikatz 'lsadump::dcsync' signature in traffic.")
-                    lines.append(f"Mitigation: Restrict replication rights to DCs only, audit 4662 events from non-DCs, rotate KRBTGT, use gMSAs.")
-                elif "sql injection" in lower or "sqli" in lower:
-                    lines.append(f"SQL Injection (SQLi) occurs when untrusted user input is concatenated into SQL queries without parameterization, allowing attackers to manipulate query logic and extract/modify/destroy data.")
-                    lines.append(f"It matters because databases often hold the most sensitive data (PII, credentials, financial records) and SQLi is a top OWASP risk.")
-                    lines.append(f"Types: Error-based (DB errors leak schema), Union-based (append SELECTs), Blind/Time-based (boolean/time oracles), Stacked (multiple statements).")
-                    lines.append(f"Mitigation: ALWAYS use parameterized queries / prepared statements; never concatenate strings; least-privilege DB accounts; WAF rules.")
-                elif "xss" in lower or "cross site scripting" in lower:
-                    lines.append(f"Cross-Site Scripting (XSS) occurs when an application reflects or stores untrusted user input without sanitization, executing attacker-controlled JavaScript in victims' browsers.")
-                    lines.append(f"It matters because XSS can steal session cookies, perform actions as the user, deface sites, and deliver malware — all bypassing same-origin policy.")
-                    lines.append(f"Types: Reflected (payload in URL/params), Stored (payload in DB), DOM-based (client-side only).")
-                    lines.append(f"Mitigation: Content-Security-Policy (script-src 'self'), output encoding per context, HttpOnly+Secure+SameSite cookies, input validation.")
-                elif "csrf" in lower or "cross site request forgery" in lower:
-                    lines.append(f"Cross-Site Request Forgery (CSRF) tricks a user's browser into making authenticated requests to a target site without their consent, exploiting the browser's automatic cookie sending.")
-                    lines.append(f"It matters because state-changing actions (password change, fund transfer, admin actions) can be executed by the attacker via the victim's session.")
-                    lines.append(f"Mitigation: SameSite cookies (Lax/Strict), CSRF tokens (synchronizer pattern), double-submit cookies, custom headers (X-Requested-With).")
-                elif "ssrf" in lower or "server side request forgery" in lower:
-                    lines.append(f"Server-Side Request Forgery (SSRF) occurs when an attacker induces the server to make HTTP requests to internal/arbitrary destinations, bypassing firewall rules.")
-                    lines.append(f"It matters because SSRF can access cloud metadata services (AWS IMDS, GCP metadata), internal APIs, and file:/// schemas — leading to credential theft and RCE.")
-                    lines.append(f"Mitigation: Allow-list egress URLs, block private IP ranges (169.254.169.254, 10.x, 192.168.x), validate user-supplied URLs, use egress proxies.")
-                elif "password spray" in lower:
-                    lines.append(f"Password Spraying is a credential access attack where a single common password is tried against many accounts, staying under per-account lockout thresholds.")
-                    lines.append(f"It matters because it evades traditional brute-force detection (which looks for many failures on ONE account) and often succeeds with common passwords like 'Spring2024!' or 'Password1'.")
-                    lines.append(f"Key indicators: Event ID 4625 burst with status 0xC000006A, one attempt per account, single source IP; followed by 4624 LogonType 10 (RDP) success.")
-                    lines.append(f"Mitigation: Enforce MFA on all remote access, monitor 4625 SourceIP cardinality, ban common passwords, use Azure AD Password Protection.")
-                elif "credential stuffing" in lower:
-                    lines.append(f"Credential Stuffing is the automated injection of breached username/password pairs across many sites, exploiting password reuse.")
-                    lines.append(f"It matters because billions of credentials are available from past breaches; automation tools (Sentry MBA, OpenBullet) can test millions per hour.")
-                    lines.append(f"Mitigation: MFA (blocks login even with valid creds), rate-limiting, bot detection (reCAPTCHA, device fingerprinting), breach monitoring (HaveIBeenPwned API).")
-                elif "entropy" in lower or "shannon" in lower:
-                    lines.append(f"Shannon Entropy measures the unpredictability of a password in bits: H = -Σ(p × log2 p) for each character's frequency. Higher entropy = harder to guess.")
-                    lines.append(f"It matters because entropy directly correlates to crack time: 28 bits = instant, 40 bits = hours, 55 bits = years, 75+ bits = effectively unbreakable offline.")
-                    lines.append(f"Example: 'Password123!' has low entropy (common word + pattern); 'CorrectHorseBatteryStaple' has high entropy (4 random words).")
-                    lines.append(f"Tool: CyberGPT Password Audit computes Shannon + charset entropy, penalizes patterns, estimates Argon2id/bcrypt crack times.")
-                elif "argon2id" in lower or "bcrypt" in lower:
-                    lines.append(f"Argon2id and bcrypt are memory-hard password hashing algorithms designed to resist GPU/ASIC cracking by requiring significant memory and CPU per guess.")
-                    lines.append(f"Argon2id (OWASP recommended): m=64MB, t=3, p=4 — slows attackers to ~1,000 guesses/sec vs billions for SHA-256.")
-                    lines.append(f"bcrypt (min cost 12): ~10,000 guesses/sec — slower than SHA but faster than Argon2id; widely supported.")
-                    lines.append(f"Never use MD5, SHA-1, SHA-256, or plaintext for passwords — they are not designed for credential storage.")
-                else:
-                    # Generic fallback for unknown concepts
-                    lines.append(f"'{clean}' is a cybersecurity concept. For detailed explanations, try: 'explain zero trust', 'explain pass the hash', 'explain kerberoasting', 'what is sql injection', 'what is xss', 'explain cia triad', 'what is defense in depth', 'explain password spraying', 'what is entropy', 'explain argon2id'.")
-                
-                clean_text = " ".join(lines)
-                return LLMResponse(
-                    content=clean_text,
-                    model_used="cybergpt-concept",
-                    tier=tier,
-                    token_usage=TokenUsage(),
-                    latency_ms=0,
-                    success=True,
-                    suggested_labs=intent_result.suggested_labs or [],
-                )
-            # Fall through to LLM if concept handling not matched
+    # ------------------------------------------------------------------
+    # Failover chain (spec priority order, quarantining dead models)
+    # ------------------------------------------------------------------
+    def _model_chain(self) -> List[str]:
+        chain: List[str] = []
+        for model_id in [*PRIORITY_MODELS, *NVIDIA_FALLBACK_MODELS]:
+            if model_id in self._dead_models or model_id in chain:
+                continue
+            chain.append(model_id)
+        return chain
 
-        # Handle OFF_TOPIC in Cyber mode: return 1-line + action chip
-        if intent_result.intent == Intent.OFF_TOPIC:
+    # ------------------------------------------------------------------
+    # Engine fallback + deterministic helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _engine_response(hit: Dict[str, Any], tier: ModelTier) -> LLMResponse:
+        return LLMResponse(
+            content=hit["markdown"],
+            model_used=hit["model_used"],
+            tier=tier,
+            token_usage=TokenUsage(),
+            latency_ms=hit.get("latency_ms", 0.0),
+            success=True,
+            suggested_labs=hit.get("suggested_labs", []),
+        )
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
+    async def chat(
+        self, messages: List[Dict[str, str]], tier: ModelTier = ModelTier.BALANCED,
+        mode: str = "cyber", byok: Optional[Dict[str, str]] = None,
+    ) -> LLMResponse:
+        """Dual-mode chat with the full INSTRUCTIONS.md §4.1 pipeline.
+
+        STEP 1  Identity/meta -> instant deterministic credit.
+        STEP 2  Mode check:
+                  cyber  -> knowledge engine -> off-topic notice -> adaptive LLM.
+                  normal -> general-assistant LLM with no cyber filters.
+        BYOK   -> user keys tried first when supplied.
+        Last   -> NVIDIA priority chain (llama-3.3-70b -> glm-5.3 -> verified queue).
+        Fallback -> local CyBOK knowledge engine when every provider fails.
+        """
+        tier = _coerce_tier(tier)
+        started = time.perf_counter()
+
+        first_user = ""
+        for msg in messages:
+            if msg.get("role") == "user":
+                first_user = msg.get("content", "")
+                break
+
+        # ---- STEP 1: identity & meta (bypass LLM in every mode) ----
+        intent_result = classify_intent(first_user, mode)
+        if intent_result.intent == Intent.META_IDENTITY:
             return LLMResponse(
-                content=intent_result.direct_response or "I'm CyberGPT in Cyber mode — I specialize in defensive cybersecurity. For general topics, please switch to Normal mode.",
-                model_used="cybergpt-offtopic",
+                content=intent_result.direct_response,
+                model_used="cybergpt-identity",
                 tier=tier,
                 token_usage=TokenUsage(),
-                latency_ms=0,
+                latency_ms=0.0,
                 success=True,
-                action=intent_result.action,
                 suggested_labs=[],
             )
 
-        # Handle INCIDENT_TRIAGE: use structured template, continue to normal flow
-        if intent_result.intent == Intent.INCIDENT_TRIAGE:
-            # Use the Balanced tier prompt which includes Event IDs / IoCs / SIGMA Rules
-            # The system prompt already includes the proper template;
-            # we just need to ensure the messages are properly sanitized
-            sanitized = sanitize_messages(messages)
-            # No bypass - let the normal failover chain handle it
-            # but with sanitized messages that don't have inline lab strings
-            # We simply continue to the normal flow
-            pass
+        # ---- STEP 2: mode check ----
+        if mode == "normal":
+            # No engine, no off-topic gate: comprehensive general assistant.
+            return await self._llm_pipeline(messages, tier, mode, first_user, byok)
 
-        # Handle GREETINGS: friendly response with Normal mode hint
-        if intent_result.intent == Intent.GREETINGS:
-            # Return the greeting response from intent classification
-            if intent_result.direct_response:
-                return LLMResponse(
-                    content=intent_result.direct_response,
-                    model_used="cybergpt-greeting",
-                    tier=tier,
-                    token_usage=TokenUsage(),
-                    latency_ms=0,
-                    success=True,
-                    suggested_labs=intent_result.suggested_labs or [],
-                )
-            # Default greeting response
-            greeting_text = ("Hello! I'm CyberGPT in Cyber mode — I can help with defensive security questions, scenario labs, or password audits. "
-                            "Switch to Normal mode for broader AI assistance.")
+        # Cyber mode: (a) knowledge engine instant answer.
+        engine_hit = knowledge_engine.answer(first_user)
+        if engine_hit:
+            return self._engine_response(engine_hit, tier)
+
+        # Cyber mode: (b) unambiguous off-topic -> notice + switch chip.
+        if intent_result.intent == Intent.OFF_TOPIC:
             return LLMResponse(
-                content=greeting_text,
+                content=intent_result.direct_response,
+                model_used="cybergpt-router",
+                tier=tier,
+                token_usage=TokenUsage(),
+                latency_ms=(time.perf_counter() - started) * 1000,
+                success=True,
+                action=intent_result.action,  # "switch_mode"
+                suggested_labs=[],
+            )
+
+        # Cyber mode: greetings -> short warm deterministic reply.
+        if intent_result.intent == Intent.GREETINGS:
+            return LLMResponse(
+                content=intent_result.direct_response,
                 model_used="cybergpt-greeting",
                 tier=tier,
                 token_usage=TokenUsage(),
-                latency_ms=0,
+                latency_ms=(time.perf_counter() - started) * 1000,
                 success=True,
-                suggested_labs=intent_result.suggested_labs or [],
+                suggested_labs=[],
             )
 
-        # --- Original failover loop begins here ---
-        tried_models = []
-        for model_id in self._failover_plan(tier):
+        # Cyber mode: (c) complex/novel cyber query -> adaptive defensive LLM.
+        return await self._llm_pipeline(messages, tier, mode, first_user, byok)
+
+    # ------------------------------------------------------------------
+    # LLM pipeline (BYOK first, then NVIDIA chain, then engine fallback)
+    # ------------------------------------------------------------------
+    async def _llm_pipeline(
+        self, messages: List[Dict[str, str]], tier: ModelTier, mode: str,
+        first_user: str, byok: Optional[Dict[str, str]],
+    ) -> LLMResponse:
+        started = time.perf_counter()
+        sanitized = sanitize_messages(messages)
+        system_prompt = build_system_prompt(tier, mode)
+        byok = byok or {}
+
+        # ---- BYOK providers (user's own keys, tried first) ----
+        openai_key = str(byok.get("openai_api_key", "") or "").strip()
+        anthropic_key = str(byok.get("anthropic_api_key", "") or "").strip()
+        openai_model = str(byok.get("openai_model", "") or "").strip() or None
+        anthropic_model = str(byok.get("anthropic_model", "") or "").strip() or None
+
+        if anthropic_key:
+            response = await self._call_anthropic(
+                anthropic_key, system_prompt, sanitized, tier, anthropic_model
+            )
+            if response.success:
+                response.suggested_labs = _extract_suggested_labs(first_user)
+                return response
+            logger.warning("BYOK Anthropic failed — falling back to the model chain")
+        if openai_key:
+            response = await self._call_openai(
+                openai_key, system_prompt, sanitized, tier, openai_model
+            )
+            if response.success:
+                response.suggested_labs = _extract_suggested_labs(first_user)
+                return response
+            logger.warning("BYOK OpenAI failed — falling back to the model chain")
+
+        # ---- NVIDIA NIM priority chain ----
+        last_error: Optional[str] = None
+        tried_models: List[str] = []
+        for model_id in self._model_chain():
             tried_models.append(model_id)
-            payload = self._build_payload(sanitized, tier, model_id)
+            payload = self._build_payload(system_prompt, sanitized, tier, model_id)
             model_failed = False
 
             for api_key in self.key_pool.snapshot():
-                response = await self._call_model(model_id, payload, tier, api_key)
+                response = await self._call_nim(model_id, payload, tier, api_key)
                 if response.success:
                     logger.info(
                         f"Success with {model_id} "
                         f"({response.latency_ms:.0f}ms, {response.token_usage.total_tokens} tokens)"
                     )
-                    # Strip inline lab recommendations from LLM response
-                    # and inject suggested labs from catalog
-                    from services.scenario_manager import LAB_REPOSITORY
-                    cleaned_content, suggested_labs = _inject_lab_recommendations(response.content, LAB_REPOSITORY)
-                    response.content = cleaned_content
-                    response.suggested_labs = suggested_labs or intent_result.suggested_labs or []
+                    response.suggested_labs = _extract_suggested_labs(first_user)
                     return response
 
                 last_error = response.error
@@ -851,29 +1106,55 @@ class LLMService:
                 if "401" in err_str or "403" in err_str:
                     # Auth failure is key-scoped: quarantine and try the next key.
                     self.key_pool.quarantine(api_key)
-                    logger.warning("NVIDIA key quarantined (auth failure) — rotating to next key")
+                    logger.warning("NVIDIA key quarantined (auth failure) — rotating")
                     continue
 
-                # Everything else (404 not provisioned, 410 EOL, 400, 429,
-                # 503 overloaded, timeout, empty content) is model-scoped for
-                # this attempt: stop burning keys and move to the next model.
+                if "404" in err_str or "410" in err_str:
+                    # Already quarantined inside _call_nim; move to next model.
+                    model_failed = True
+                    break
+
+                # Everything else (400, 429, 503, timeout, empty content) is
+                # model-scoped for this attempt: stop burning keys, move on.
                 model_failed = True
                 break
 
             if model_failed:
-                logger.warning(f"Failover: {model_id} failed — trying next verified model")
+                logger.warning(f"Failover: {model_id} failed — trying next model")
 
-        # Complete failover exhaustion.
+        # ---- Graceful degradation: local CyBOK knowledge engine ----
+        engine_hit = knowledge_engine.answer(first_user)
+        if engine_hit:
+            logger.warning(
+                f"All providers unavailable (tried {tried_models}) — answered offline "
+                f"from the CyBOK knowledge engine"
+            )
+            fallback = self._engine_response(engine_hit, tier)
+            fallback.content = (
+                f"{fallback.content}\n\n"
+                f"> *Note: external inference providers were unavailable "
+                f"(last error: {str(last_error)[:60]}). This answer came from the "
+                f"local CyBOK v1.1.0 knowledge engine.*"
+            )
+            return fallback
+
+        total_ms = (time.perf_counter() - started) * 1000
         logger.error(
             f"Failover chain exhausted for tier={tier.value}: "
             f"models={tried_models} last_error={last_error}"
         )
         return LLMResponse(
-            content="All NVIDIA NIM models/keys unavailable. Verify your nvapi- keys and connectivity.",
+            content=(
+                "I could not reach any inference provider just now, and the local "
+                "knowledge engine has no entry for this question. Please retry in a "
+                "moment — or try a CyBOK concept (for example 'what is zero trust', "
+                "'explain kerberoasting', 'IT vs OT security') which I can answer "
+                "fully offline."
+            ),
             model_used="none",
             tier=tier,
             token_usage=TokenUsage(),
-            latency_ms=0,
+            latency_ms=total_ms,
             success=False,
             error=f"Failover chain exhausted: {last_error}",
         )
@@ -889,7 +1170,8 @@ class LLMService:
             yield f"Error: {response.error}"
 
     def chat_sync(
-        self, messages: List[Dict[str, str]], tier: ModelTier = ModelTier.BALANCED, mode: str = "cyber"
+        self, messages: List[Dict[str, str]], tier: ModelTier = ModelTier.BALANCED,
+        mode: str = "cyber", byok: Optional[Dict[str, str]] = None,
     ) -> LLMResponse:
         """Synchronous entry point for Flask handlers.
 
@@ -897,7 +1179,7 @@ class LLMService:
         loop and blocks for the result. Safe to call from request threads; the
         underlying aiohttp session stays bound to one loop.
         """
-        return run_async(self.chat(messages, _coerce_tier(tier), mode))
+        return run_async(self.chat(messages, _coerce_tier(tier), mode, byok))
 
     def get_token_stats(self) -> Dict[str, Any]:
         return {
@@ -905,9 +1187,11 @@ class LLMService:
             "total_requests": len(self.token_history),
             "total_tokens": sum(h["tokens"] for h in self.token_history),
             "active_keys": self.key_pool.size,
+            "byok_enabled": True,
             "endpoint": NVIDIA_BASE_URL,
             "timeout_s": CLIENT_TIMEOUT,
-            "tier_models": {t.value: TIER_MODELS[t] for t in ModelTier},
+            "model_priority": [*PRIORITY_MODELS, *NVIDIA_FALLBACK_MODELS],
+            "knowledge_engine": knowledge_engine.stats(),
         }
 
 
@@ -926,251 +1210,17 @@ def reset_session_history() -> None:
     llm_service.session_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
 
 
-# --- Intent Classification ---
+__all__ = [
+    "LLMService",
+    "llm_service",
+    "get_llm_service",
+    "reset_session_history",
+    "ModelTier",
+    "LLMResponse",
+    "TokenUsage",
+    "Intent",
+    "classify_intent",
+    "run_async",
+    "shutdown_bridge",
+]
 
-from enum import Enum
-from dataclasses import dataclass
-from typing import Optional, List
-
-class Intent(Enum):
-    META_IDENTITY = "meta_identity"
-    CONCEPTS = "concepts"
-    INCIDENT_TRIAGE = "incident_triage"
-    GREETINGS = "greetings"
-    GENERAL_CHAT = "general_chat"
-    OFF_TOPIC = "off_topic"
-
-
-@dataclass
-class IntentResult:
-    intent: Intent
-    bypass_llm: bool
-    direct_response: Optional[str]
-    section_name: Optional[str]
-    requires_telemetry: bool
-    suggested_labs: List[dict] = None
-    action: Optional[str] = None  # e.g., "switch_mode"
-
-    def __post_init__(self):
-        if self.suggested_labs is None:
-            self.suggested_labs = []
-
-
-# --- Intent Classification ---
-
-def _classify_intent(message: str, mode: str = "cyber") -> IntentResult:
-    """Classify user message intent for routing decisions.
-
-    Returns IntentResult determining whether to bypass LLM,
-    which template to use, and what direct response to give.
-
-    Classification logic follows strict order:
-    1. META_IDENTITY: exact anchor-regex match only (entire query must be
-       purely an identity query). Mentioning security concepts disqualifies.
-    2. Mode evaluation FIRST (before any other classification):
-       - mode == 'normal': bypass ALL cyber filters, send to LLM as general chat
-       - mode == 'cyber': strict cyber routing (only non-cyber topics → off-topic)
-    3. Fail-safe: if uncertain, default to LLM routing.
-    """
-    lower = (message or "").lower().strip()
-
-    # --- 1. Strict Identity (META) Detection using exact anchor regex ---
-    # Match ONLY if the entire query is purely an identity query.
-    # If the query mentions security concepts, tools, protocols, or logs,
-    # IT IS NOT an identity query.
-    identity_pattern = r"^\s*(who are you|what('s| is) your name|whats your name|who made you|who created you|who developed you|tera naam|kiska bot ho|tum kaun ho)\s*\??$"
-    if re.match(identity_pattern, lower):
-        return IntentResult(
-            intent=Intent.META_IDENTITY,
-            bypass_llm=True,
-            direct_response=(
-                "I'm CyberGPT, a defensive cybersecurity learning assistant "
-                "developed by Muhammad Umair. How can I assist your security studies today?"
-            ),
-            section_name=None,
-            requires_telemetry=False,
-        )
-
-    # --- 3. Fuzzy / Multilingual Identity Detection (additional matching) ---
-    # Normalize: remove common punctuation, collapse whitespace
-    normalized = re.sub(r"[^\w\s]", " ", lower)
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-
-    # Check identity phrases across languages (handles typos, Roman Urdu, etc.)
-    is_identity = False
-    identity_phrases_check = [
-        "your name", "who are you", "tera name", "tum kaun ho",
-        "who made you", "whats your purpose", "why choose you",
-        "kya special hai", " kisne banaya"
-    ]
-    cyber_guard = ["zero trust", "pass the hash", "sql injection", "xss",
-                   "cyber security", "event log", "firewall", "malware",
-                   "phishing", "red team", "blue team"]
-    
-    for phrase in identity_phrases_check:
-        if phrase in normalized:
-            # Guard: if query also mentions cyber concepts, NOT an identity query
-            if not any(kw in normalized for kw in cyber_guard):
-                is_identity = True
-                break
-
-    if is_identity:
-        return IntentResult(
-            intent=Intent.META_IDENTITY,
-            bypass_llm=True,
-            direct_response=(
-                "I'm CyberGPT, a specialized defensive cybersecurity learning assistant "
-                "and SOC operations simulator developed by Muhammad Umair. Unlike "
-                "general-purpose models, I provide hands-on attack telemetry analysis, "
-                "SIEM log correlation, scenario drills, and defensive guidance tailored "
-                "for cyber learners. Switch to Normal mode anytime for general topics!"
-            ),
-            section_name=None,
-            requires_telemetry=False,
-        )
-
-    # --- 2. Mode Evaluation FIRST (before all other classification) ---
-    # If mode == 'normal': bypass ALL cyber-only off-topic filters,
-    # send prompt directly to the LLM with a helpful general-purpose system prompt.
-    if mode == "normal":
-        from services.scenario_manager import LAB_REPOSITORY
-        suggested_labs = _extract_suggested_labs(lower, LAB_REPOSITORY)
-        return IntentResult(
-            intent=Intent.GENERAL_CHAT,
-            bypass_llm=False,
-            direct_response=None,
-            section_name=None,
-            requires_telemetry=False,
-            suggested_labs=suggested_labs,
-        )
-
-    # If mode == 'cyber': apply strict cyber routing
-    # In cyber mode, only trigger off-topic for clearly non-cyber topics.
-    # Technical cyber queries (Pass-the-Hash, Zero Trust, SQLi, etc.) MUST
-    # always forward to the LLM — never classify as off-topic.
-
-    # --- OFF_TOPIC in Cyber mode: only clearly non-cyber topics ---
-    # Define clearly non-cyber keyword sets (lifestyle, entertainment, etc.)
-    # These are topics that have no place in a defensive cybersecurity context.
-    non_cyber_keywords = [
-        "cooking", "recipe", "cook", "food", "pizza", "burger",
-        "movies", "film", "actor", "celebrity",
-        "sports", "cricket", "football", "soccer", "basketball",
-        "stock", "trading", "market", "investment",
-        "music", "song", "artist", "concert",
-        "travel", "vacation", "hotel", "tourism",
-        "fashion", "style", "clothing", "brand",
-        "gaming", "console", "game", "character",
-    ]
-    is_non_cyber = any(kw in lower for kw in non_cyber_keywords)
-    if mode == "cyber" and is_non_cyber:
-        return IntentResult(
-            intent=Intent.OFF_TOPIC,
-            bypass_llm=True,
-            direct_response=(
-                "I'm CyberGPT in Cyber mode — I specialize in defensive cybersecurity. "
-                "For general topics, please switch to Normal mode."
-            ),
-            section_name=None,
-            requires_telemetry=False,
-            action="switch_mode",
-            suggested_labs=[],
-        )
-
-    # --- Default: general chat (fail-safe) ---
-    # If classification is uncertain, default to calling the LLM instead of
-    # returning hardcoded responses. Technical cyber queries always reach the LLM.
-    from services.scenario_manager import LAB_REPOSITORY
-    suggested_labs = _extract_suggested_labs(lower, LAB_REPOSITORY)
-    return IntentResult(
-        intent=Intent.GENERAL_CHAT,
-        bypass_llm=False,
-        direct_response=None,
-        section_name=None,
-        requires_telemetry=False,
-        suggested_labs=suggested_labs,
-    )
-    
-def _strip_lab_recommendations(text: str) -> str:
-    """Remove inline CyberGPT Lab Recommendation strings from response text.
-    
-    Pattern: [CyberGPT Lab Recommendation: Test your skills live in ...]
-    """
-    import re
-    return re.sub(r'\[CyberGPT Lab Recommendation:.*?\]', '', text).strip()
-
-
-def _extract_suggested_labs(message: str, lab_repository: Dict) -> List[Dict]:
-    """Extract up to 2 verified lab objects from catalog matching query keywords.
-    
-    Matches query keywords against lab titles/categories from the actual
-    data/labs/*.json catalog, NOT inline text generation.
-    """
-    suggested = []
-    lower = message.lower()
-    
-    # Category mapping for matching
-    category_map = {
-        "phishing": "phishing",
-        "soc": "soc/endpoint", 
-        "password": "password/auth",
-        "web appsec": "web appsec",
-        "cloud": "cloud/iam",
-        "network": "network/dns-tls",
-        "logs": "logs/siem",
-        "active directory": "active directory",
-    }
-    
-    # Score labs based on keyword matches
-    scores = {}
-    for lab_id, lab in lab_repository.items():
-        score = 0
-        title = lab.get("title", "").lower()
-        category = lab.get("category", "").lower()
-        learning = " ".join(lab.get("learning_objectives", [])).lower()
-        
-        # Match against query keywords
-        keywords = ["phishing", "zero trust", "malware", "ransomware", 
-                   "spyware", "sql injection", "xss", "oauth", "credential",
-                   "password", "network", "dns", "tls", "siem", "event",
-                   "log", "incident", "phishing", "malware"]
-        
-        for kw in keywords:
-            if kw in lower:
-                if kw in title or kw in learning:
-                    score += 1
-        
-        # Also match by category
-        for cat_kw, cat_name in category_map.items():
-            if cat_kw in lower and cat_kw in category:
-                score += 2
-        
-        if score > 0 and lab_id not in [s["id"] for s in suggested]:
-            if len(suggested) < 2 or score >= 2:
-                suggested.append({
-                    "id": lab_id,
-                    "title": lab.get("title", "Unknown Lab"),
-                    "category": lab.get("category", "Unknown"),
-                    "score": score
-                })
-    
-    # Sort by score and return top 2
-    suggested.sort(key=lambda x: x["score"], reverse=True)
-    return [{"id": s["id"], "title": s["title"], "category": s["category"]} 
-            for s in suggested[:2]]
-
-
-def _inject_lab_recommendations(content: str, lab_repository: Dict) -> Tuple[str, List[Dict]]:
-    """Inject lab recommendations based on content keywords using ACTUAL catalog data.
-    
-    Returns (cleaned_content, suggested_labs) where:
-    - cleaned_content has [CyberGPT Lab Recommendation:...] stripped out
-    - suggested_labs contains up to 2 verified lab objects from the catalog
-    """
-    # First, strip any existing inline recommendation strings
-    cleaned = _strip_lab_recommendations(content)
-    
-    # Extract suggested labs from the actual catalog
-    suggested_labs = _extract_suggested_labs(cleaned, lab_repository)
-    
-    return cleaned, suggested_labs
