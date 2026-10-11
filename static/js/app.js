@@ -855,9 +855,12 @@ function placeComposer(docked) {
   if (docked === true) {
     // Transfer #chat-form into #dock-slot
     if (c.node.parentElement !== dockSlot) dockSlot.appendChild(c.node);
-    // Hide hero greeting and show dock with explicit styles
+    // Hide hero greeting and show dock with explicit styles.
+    // NOTE: inline style values cannot carry "!important" — the CSSOM
+    // rejects such assignments entirely, which would leave the stale
+    // "display: none" in place and hide the composer. Use plain "flex".
     chatEmpty.style.display = "none";
-    composerDock.style.display = "flex !important";
+    composerDock.style.display = "flex";
     composerDock.style.visibility = "visible";
   } else {
     // Transfer #chat-form to #empty-composer-slot

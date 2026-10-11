@@ -990,14 +990,16 @@ class LLMService:
         tier = _coerce_tier(tier)
         started = time.perf_counter()
 
-        first_user = ""
-        for msg in messages:
+        # Route on the LATEST user turn, not the first: multi-turn sessions
+        # must match the question actually being asked right now.
+        latest_user = ""
+        for msg in reversed(messages):
             if msg.get("role") == "user":
-                first_user = msg.get("content", "")
+                latest_user = msg.get("content", "")
                 break
 
         # ---- STEP 1: identity & meta (bypass LLM in every mode) ----
-        intent_result = classify_intent(first_user, mode)
+        intent_result = classify_intent(latest_user, mode)
         if intent_result.intent == Intent.META_IDENTITY:
             return LLMResponse(
                 content=intent_result.direct_response,
@@ -1012,10 +1014,10 @@ class LLMService:
         # ---- STEP 2: mode check ----
         if mode == "normal":
             # No engine, no off-topic gate: comprehensive general assistant.
-            return await self._llm_pipeline(messages, tier, mode, first_user, byok)
+            return await self._llm_pipeline(messages, tier, mode, latest_user, byok)
 
         # Cyber mode: (a) knowledge engine instant answer.
-        engine_hit = knowledge_engine.answer(first_user)
+        engine_hit = knowledge_engine.answer(latest_user)
         if engine_hit:
             return self._engine_response(engine_hit, tier)
 
@@ -1045,7 +1047,7 @@ class LLMService:
             )
 
         # Cyber mode: (c) complex/novel cyber query -> adaptive defensive LLM.
-        return await self._llm_pipeline(messages, tier, mode, first_user, byok)
+        return await self._llm_pipeline(messages, tier, mode, latest_user, byok)
 
     # ------------------------------------------------------------------
     # LLM pipeline (BYOK first, then NVIDIA chain, then engine fallback)
