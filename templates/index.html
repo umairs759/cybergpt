@@ -135,6 +135,12 @@
             <span class="nav-label">Security Cheat Sheets</span>
           </button>
         </li>
+        <li>
+          <button class="nav-tab" data-tab="analyzer" role="tab" aria-selected="false">
+            <i data-lucide="stethoscope" class="nav-ico"></i>
+            <span class="nav-label">Cyber Error Analyzer</span>
+          </button>
+        </li>
       </ul>
 
       <!-- D. Recent operations & history -->
@@ -192,6 +198,9 @@
       </nav>
 
       <div class="header-right">
+        <button id="settings-btn" class="icon-btn" title="API settings (BYOK)" aria-label="Open API settings" aria-expanded="false">
+          <i data-lucide="settings" class="h-4 w-4"></i>
+        </button>
         <div id="tier-switcher" class="tier-group" role="group" aria-label="Model response tier">
           <button class="tier-btn" data-tier="flash" title="2-3 lines · ~2-3s response">
             <i data-lucide="zap" class="h-3 w-3"></i>
@@ -417,6 +426,72 @@
           </div>
         </div>
       </section>
+
+      <!-- ================= MODULE 7: CYBER ERROR ANALYZER ================= -->
+      <section class="tab-view" id="tab-analyzer" role="tabpanel" aria-label="Cyber Error Analyzer">
+        <div class="lab-head">
+          <div class="min-w-0">
+            <h2 class="module-title">Cyber Error Analyzer</h2>
+            <p class="module-sub">Analyze error telemetry, detect patterns, and redact secrets</p>
+          </div>
+          <i data-lucide="stethoscope" class="head-ico"></i>
+        </div>
+
+        <div class="analyzer-form">
+          <div class="form-row">
+            <label for="analyzer-evidence" class="form-label">Evidence (telemetry, error messages, logs)</label>
+            <textarea id="analyzer-evidence" class="form-input" rows="5" placeholder="Paste Sysmon, EDR, or security telemetry here..."></textarea>
+          </div>
+
+          <div class="form-row analyzer-row-2col">
+            <div>
+              <label for="analyzer-environment" class="form-label">Environment</label>
+              <select id="analyzer-environment" class="form-input">
+                <option value="">Select environment</option>
+                <option value="windows">Windows</option>
+                <option value="linux">Linux</option>
+                <option value="macos">macOS</option>
+                <option value="cloud">Cloud / AWS</option>
+                <option value="network">Network / DNS / TLS</option>
+              </select>
+            </div>
+            <div>
+              <label for="analyzer-problem-type" class="form-label">Problem Type</label>
+              <select id="analyzer-problem-type" class="form-input">
+                <option value="Auto-detect">Auto-detect</option>
+                <option value="Terminal/CLI error">Terminal/CLI error</option>
+                <option value="Python/application code error">Python/application code error</option>
+                <option value="Web application security finding">Web application security finding</option>
+                <option value="HTTP/API error">HTTP/API error</option>
+                <option value="Network/DNS/TLS">Network/DNS/TLS</option>
+                <option value="Linux system error">Linux system error</option>
+                <option value="Windows/Active Directory event">Windows/Active Directory event</option>
+                <option value="SIEM/EDR alert">SIEM/EDR alert</option>
+                <option value="Suspicious email/phishing evidence">Suspicious email/phishing evidence</option>
+                <option value="Cloud/IAM">Cloud/IAM</option>
+                <option value="Database error">Database error</option>
+                <option value="Docker/deployment">Docker/deployment</option>
+                <option value="Suspicious payload (analysis only)">Suspicious payload (analysis only)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="analyzer-actions">
+          <button id="analyze-btn" class="btn-cyber analyze-btn" type="button">
+            <i data-lucide="scan-search" class="h-4 w-4"></i>
+            <span>Analyze Error</span>
+          </button>
+          <span id="analyze-spinner" class="hidden analyzer-spinner">Analyzing…</span>
+        </div>
+
+        <div id="analyzer-result" class="analyzer-result password-result" aria-live="polite">
+          <div class="result-placeholder">
+            <i data-lucide="info" class="h-5 w-5" style="color: var(--cyan);"></i>
+            <p>Paste security telemetry, an error message, or a suspicious payload. Evidence is wrapped in inert delimiter tags, redacted, and analyzed in memory only.</p>
+          </div>
+        </div>
+      </section>
     </main>
 
     <!-- FOOTER -->
@@ -464,62 +539,64 @@
   </form>
 </template>
 
+<!-- =====================================================================
+     SETTINGS MODAL — Bring Your Own Key (BYOK)
+     Keys are stored ONLY in this browser's localStorage under
+     "cybergpt_byok" and sent per-request; never logged server-side.
+     ===================================================================== -->
+<div id="settings-overlay" class="settings-overlay" hidden aria-hidden="true">
+  <div id="settings-card" class="settings-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="settings-head">
+      <div class="settings-head-left">
+        <i data-lucide="key-round" class="settings-head-ico"></i>
+        <h2 id="settings-title" class="settings-title">API Settings</h2>
+      </div>
+      <button id="settings-close" class="icon-btn" title="Close settings" aria-label="Close settings">
+        <i data-lucide="x" class="h-4 w-4"></i>
+      </button>
+    </div>
+
+    <p class="settings-sub">
+      Bring your own key for direct OpenAI or Anthropic inference. Keys stay in
+      this browser only (localStorage) and are sent per-request — never stored
+      or logged on the server. Leave blank to use the built-in NVIDIA NIM chain
+      with the offline CyBOK knowledge engine as fallback.
+    </p>
+
+    <div class="settings-form">
+      <div class="form-row">
+        <label for="byok-openai-key" class="form-label">OpenAI API key</label>
+        <input type="password" id="byok-openai-key" class="form-input" placeholder="sk-... (optional)" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="form-row">
+        <label for="byok-openai-model" class="form-label">OpenAI model (optional)</label>
+        <input type="text" id="byok-openai-model" class="form-input" placeholder="gpt-4o-mini" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="form-row">
+        <label for="byok-anthropic-key" class="form-label">Anthropic API key</label>
+        <input type="password" id="byok-anthropic-key" class="form-input" placeholder="sk-ant-... (optional)" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="form-row">
+        <label for="byok-anthropic-model" class="form-label">Anthropic model (optional)</label>
+        <input type="text" id="byok-anthropic-model" class="form-input" placeholder="claude-3-5-haiku-latest" autocomplete="off" spellcheck="false" />
+      </div>
+    </div>
+
+    <div class="settings-status" id="settings-status" aria-live="polite"></div>
+
+    <div class="settings-actions">
+      <button id="settings-save" class="btn-cyber" type="button">
+        <i data-lucide="save" class="h-4 w-4"></i>
+        <span>Save Keys</span>
+      </button>
+      <button id="settings-clear" class="btn-secondary" type="button">
+        <i data-lucide="trash-2" class="h-4 w-4"></i>
+        <span>Clear Keys</span>
+      </button>
+    </div>
+  </div>
+</div>
+
 <script src="{{ url_for('static', filename='js/app.js') }}?v=3.2.0"></script>
 </body>
 </html>
-
-<!-- ================= MODULE 7: CYBER ERROR ANALYZER ================= -->
-      <section class="tab-view" id="tab-analyzer" role="tabpanel" aria-label="Cyber Error Analyzer">
-        <div class="lab-head">
-          <div class="min-w-0">
-            <h2 class="module-title">Cyber Error Analyzer</h2>
-            <p class="module-sub">Analyze error telemetry, detect patterns, and redact secrets</p>
-          </div>
-        </div>
-
-        <div class="analyzer-form">
-          <div class="form-row">
-            <label for="analyzer-evidence" class="form-label">Evidence (telemetry, error messages, logs)</label>
-            <textarea id="analyzer-evidence" class="form-input" rows="5" placeholder="Paste Sysmon, EDR, or security telemetry here..."></textarea>
-          </div>
-
-          <div class="form-row">
-            <label for="analyzer-environment" class="form-label">Environment</label>
-            <select id="analyzer-environment" class="form-input">
-              <option value="">Select environment</option>
-              <option value="windows">Windows</option>
-              <option value="linux">Linux</option>
-              <option value="macos">macOS</option>
-              <option value="cloud">Cloud / AWS</option>
-              <option value="network">Network / DNS / TLS</option>
-            </select>
-          </div>
-
-          <div class="form-row">
-            <label for="analyzer-problem-type" class="form-label">Problem Type</label>
-            <select id="analyzer-problem-type" class="form-input">
-              <option value="Auto-detect">Auto-detect</option>
-              <option value="Terminal/CLI error">Terminal/CLI error</option>
-              <option value="Python/application code error">Python/application code error</option>
-              <option value="Web application security finding">Web application security finding</option>
-              <option value="HTTP/API error">HTTP/API error</option>
-              <option value="Network/DNS/TLS">Network/DNS/TLS</option>
-              <option value="Linux system error">Linux system error</option>
-              <option value="Windows/Active Directory event">Windows/Active Directory event</option>
-              <option value="SIEM/EDR alert">SIEM/EDR alert</option>
-              <option value="Suspicious email/phishing evidence">Suspicious email/phishing evidence</option>
-              <option value="Cloud/IAM">Cloud/IAM</option>
-              <option value="Database error">Database error</option>
-              <option value="Docker/deployment">Docker/deployment</option>
-              <option value="Suspicious payload (analysis only)">Suspicious payload (analysis only)</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="analyzer-actions">
-          <button id="analyze-btn" class="analyze-btn">Analyze Error</button>
-          <span id="analyze-spinner" class="hidden">Analyzing…</span>
-        </div>
-
-        <div id="analyzer-result" class="analyzer-result" aria-live="polite"></div>
-      </section>

@@ -49,6 +49,7 @@ const MODULE_LABELS = {
   soc: "SOC Incident Drills",
   cheatsheets: "Security Cheat Sheets",
   "study-planner": "Study Planner",
+  analyzer: "Cyber Error Analyzer",
 };
 
 function cryptoId() {
@@ -576,6 +577,7 @@ function sendChatMessageWithMode(event, mode) {
       tier: state.tier,
       mode: requestMode,
       session_id: state.sessionId,
+      ...byokRequestBody(),
     }),
   })
     .then((res) => res.json())
@@ -585,15 +587,15 @@ function sendChatMessageWithMode(event, mode) {
         if (data.session_id) state.sessionId = data.session_id;
         updateSessionChip();
         const meta = `Model: ${data.model_used} · ${String(data.tier || "").toUpperCase()} · ${data.tokens_used} tokens · ${data.latency_ms}ms`;
-        appendMessage("assistant", data.reply, meta);
+        appendMessage("assistant", data.reply, meta, data.suggested_labs, data.action);
       } else {
-        appendMessage("assistant", `⚠️ **Inference service unavailable**\n\n${escapeHtml(data.error || "Unknown error")}`);
+        appendMessage("assistant", `**Inference service unavailable**\n\n${escapeHtml(data.error || "Unknown error")}`);
         input.value = message; // Restore on error
       }
     })
     .catch((err) => {
       removeTypingIndicator();
-      appendMessage("assistant", `⚠️ **Network error:** ${escapeHtml(err.message)}`);
+      appendMessage("assistant", `**Network error:** ${escapeHtml(err.message)}`);
       input.value = message; // Restore on error
     })
     .finally(() => {
@@ -613,8 +615,134 @@ function updateChatMeta() {
     pro: "Pro — 13-20 lines · architecture & IoCs",
   };
   const text = labels[state.tier] || labels.balanced;
-  if (meta) meta.textContent = `${text} · NVIDIA NIM failover`;
+  if (meta) meta.textContent = `${text} · GLM-5.3 failover · CyBOK engine offline-ready`;
   if (profile) profile.textContent = state.tier.charAt(0).toUpperCase() + state.tier.slice(1);
+}
+
+/* ============================================================
+   BYOK SETTINGS (Bring Your Own Key — OpenAI / Anthropic)
+   Keys live ONLY in this browser's localStorage under
+   "cybergpt_byok" and are attached per-request. They are
+   never rendered back into the DOM or logged anywhere.
+   ============================================================ */
+const BYOK_STORAGE_KEY = "cybergpt_byok";
+
+function loadByok() {
+  try {
+    const raw = localStorage.getItem(BYOK_STORAGE_KEY);
+    if (!raw) return { openai_api_key: "", anthropic_api_key: "", openai_model: "", anthropic_model: "" };
+    const parsed = JSON.parse(raw);
+    return {
+      openai_api_key: String(parsed.openai_api_key || ""),
+      anthropic_api_key: String(parsed.anthropic_api_key || ""),
+      openai_model: String(parsed.openai_model || ""),
+      anthropic_model: String(parsed.anthropic_model || ""),
+    };
+  } catch (e) {
+    return { openai_api_key: "", anthropic_api_key: "", openai_model: "", anthropic_model: "" };
+  }
+}
+
+function byokRequestBody() {
+  const byok = loadByok();
+  const body = {};
+  if (byok.openai_api_key) body.openai_api_key = byok.openai_api_key;
+  if (byok.anthropic_api_key) body.anthropic_api_key = byok.anthropic_api_key;
+  if (byok.openai_model) body.openai_model = byok.openai_model;
+  if (byok.anthropic_model) body.anthropic_model = byok.anthropic_model;
+  return body;
+}
+
+function initSettingsModal() {
+  const overlay = $("#settings-overlay");
+  const btn = $("#settings-btn");
+  const closeBtn = $("#settings-close");
+  const saveBtn = $("#settings-save");
+  const clearBtn = $("#settings-clear");
+  const status = $("#settings-status");
+  if (!overlay || !btn) return;
+
+  const fields = {
+    openai_api_key: $("#byok-openai-key"),
+    anthropic_api_key: $("#byok-anthropic-key"),
+    openai_model: $("#byok-openai-model"),
+    anthropic_model: $("#byok-anthropic-model"),
+  };
+
+  const setStatus = (msg, isError) => {
+    if (!status) return;
+    status.textContent = msg;
+    status.classList.toggle("is-error", Boolean(isError));
+  };
+
+  const fillFields = () => {
+    const byok = loadByok();
+    Object.keys(fields).forEach((name) => {
+      if (fields[name]) fields[name].value = byok[name] || "";
+    });
+  };
+
+  const open = () => {
+    fillFields();
+    setStatus("");
+    overlay.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    const first = fields.openai_api_key;
+    if (first) first.focus();
+  };
+
+  const close = () => {
+    overlay.hidden = true;
+    btn.setAttribute("aria-expanded", "false");
+  };
+
+  btn.addEventListener("click", open);
+  if (closeBtn) closeBtn.addEventListener("click", close);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !overlay.hidden) close();
+  });
+
+  if (saveBtn) {
+    saveBtn.addEventListener("click", () => {
+      try {
+        const byok = {};
+        let supplied = 0;
+        Object.keys(fields).forEach((name) => {
+          const value = fields[name] ? fields[name].value.trim() : "";
+          if (value) {
+            byok[name] = value;
+            if (name.endsWith("_api_key")) supplied += 1;
+          }
+        });
+        localStorage.setItem(BYOK_STORAGE_KEY, JSON.stringify(byok));
+        setStatus(
+          supplied > 0
+            ? "Keys saved to this browser only. They will be used first on your next message."
+            : "Saved with no keys — the built-in NVIDIA NIM chain will be used.",
+          false
+        );
+        updateChatMeta();
+      } catch (e) {
+        setStatus("Could not save (localStorage unavailable).", true);
+      }
+    });
+  }
+
+  if (clearBtn) {
+    clearBtn.addEventListener("click", () => {
+      try {
+        localStorage.removeItem(BYOK_STORAGE_KEY);
+        fillFields();
+        setStatus("Keys cleared. Using the built-in model chain only.", false);
+        updateChatMeta();
+      } catch (e) {
+        setStatus("Could not clear (localStorage unavailable).", true);
+      }
+    });
+  }
 }
 
 /* ============================================================
@@ -987,6 +1115,7 @@ async function sendChatMessage(event) {
         tier: state.tier,
         mode: state.mode || "cyber",
         session_id: state.sessionId,
+        ...byokRequestBody(),
       }),
     });
     const data = await res.json();
@@ -1003,14 +1132,14 @@ async function sendChatMessage(event) {
     } else {
       appendMessage(
         "assistant",
-        `⚠️ **Inference service unavailable**\n\n${escapeHtml(data.error || "Unknown error")}\n\nThe NVIDIA NIM failover chain was exhausted. Verify the account has live models provisioned.`
+        `**Inference unavailable**\n\n${escapeHtml(data.error || "Unknown error")}\n\nTry a CyBOK concept (e.g. "what is zero trust") — I answer those fully offline.`
       );
       // Restore input on error (user can retry)
       input.value = message;
     }
   } catch (err) {
     removeTypingIndicator();
-    appendMessage("assistant", `⚠️ **Network error:** ${escapeHtml(err.message)}`);
+    appendMessage("assistant", `**Network error:** ${escapeHtml(err.message)}`);
     // Restore input on error (user can retry)
     input.value = message;
   } finally {
@@ -1220,7 +1349,7 @@ function initFlushButton() {
     } catch (err) {
       appendMessage(
         "assistant",
-        `⚠️ **Could not reach the session service:** ${escapeHtml(err.message)}\nThe transcript was still cleared locally.`
+        `**Could not reach the session service:** ${escapeHtml(err.message)}\nThe transcript was still cleared locally.`
       );
     } finally {
       if (span) span.textContent = original;
@@ -2039,6 +2168,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initComposer();
   initModeSwitcher();
   initQuickPills();
+  initSettingsModal();
   initCodeCopyDelegation($("#chat-log"));
   initCodeCopyDelegation(document);
   initPasswordAudit();

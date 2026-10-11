@@ -297,13 +297,19 @@ User message (validated: <= 8000 chars, delimiters sanitized)
 ### 4.3 Resilient Failover & BYOK
 
 - **Model priority**: `meta/llama-3.3-70b-instruct` → `z-ai/glm-5.3` → the
-  NVIDIA NIM verified fallback queue.
+  NVIDIA NIM verified fallback queue (`nvidia/nemotron-3-super-120b-a12b`,
+  `openai/gpt-oss-20b`, `nvidia/nemotron-3.5-lightning-30b-a3b`,
+  `poolside/laguna-xs-2.1`). Models answering **404/410** are quarantined
+  for the process lifetime, so a known-EOL model costs at most one request
+  (live probe, 2026-10: llama-3.3-70b answers 410 — glm-5.3 answers 200).
 - **Settings modal**: users may store a custom OpenAI or Anthropic API key
-  in `localStorage` (`cybergpt_byok`), transmitted per-request and never
-  logged or persisted server-side.
-- **Graceful degradation**: if every external API fails or returns 503, the
-  system falls back to the local CyBOK knowledge engine so defensive
-  learning continues offline.
+  (plus optional model names) in `localStorage` under `cybergpt_byok`,
+  transmitted per-request in the JSON body, never logged or persisted
+  server-side, and tried **before** the built-in chain.
+- **Graceful degradation**: if every external API fails or returns 5xx/503,
+  the system falls back to the local CyBOK knowledge engine so defensive
+  learning continues offline; identity, off-topic, greetings and concept
+  queries never require the network at all.
 
 ---
 
