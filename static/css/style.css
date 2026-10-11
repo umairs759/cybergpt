@@ -100,6 +100,7 @@ button { font-family: inherit; }
 .tab-view.active {
   display: flex !important;
   flex-direction: column;
+  width: 100%;
 }
 
 @media (min-width: 1025px) {

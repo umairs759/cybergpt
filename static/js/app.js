@@ -714,18 +714,32 @@ function updateSendState() {
 }
 
 /** Swap the composer between the empty-state slot and the dock. */
-function placeComposer(hasMessages) {
+function placeComposer(docked) {
   const c = window.__composer;
   if (!c) return;
   const emptySlot = $("#empty-composer-slot");
   const dockSlot = $("#dock-slot");
   const shell = $(".chat-shell");
-  if (!emptySlot || !dockSlot) return;
+  const chatEmpty = $("#chat-empty");
+  const composerDock = $("#composer-dock");
+  if (!emptySlot || !dockSlot || !chatEmpty || !composerDock) return;
 
-  const target = hasMessages ? dockSlot : emptySlot;
-  if (c.node.parentElement !== target) target.appendChild(c.node);
-
-  if (shell) shell.classList.toggle("has-messages", hasMessages);
+  if (docked === true) {
+    // Transfer #chat-form into #dock-slot
+    if (c.node.parentElement !== dockSlot) dockSlot.appendChild(c.node);
+    // Hide hero greeting and show dock with explicit styles
+    chatEmpty.style.display = "none";
+    composerDock.style.display = "flex !important";
+    composerDock.style.visibility = "visible";
+  } else {
+    // Transfer #chat-form to #empty-composer-slot
+    if (c.node.parentElement !== emptySlot) emptySlot.appendChild(c.node);
+    // Show hero greeting and hide dock
+    chatEmpty.style.display = "flex";
+    composerDock.style.display = "none";
+    composerDock.style.visibility = "hidden";
+  }
+  if (shell) shell.classList.toggle("has-messages", docked === true);
 }
 
 function setSendButtonLoading(isLoading) {
