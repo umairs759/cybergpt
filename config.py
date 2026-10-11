@@ -17,19 +17,18 @@ class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "cybergpt-enterprise-secret-key-change-in-production")
     WTF_CSRF_ENABLED = False
     
-    # Server Configuration (strictly local — see INSTRUCTIONS.md §1)
-    HOST = os.getenv("HOST", "127.0.0.1")
+    # Server Configuration
+    HOST = os.getenv("HOST", "0.0.0.0")
     PORT = int(os.getenv("PORT", "5000"))
     FLASK_ENV = os.getenv("FLASK_ENV", "development")
-    # Security Pillar 5: DEBUG must default to disabled.
-    FLASK_DEBUG = os.getenv("FLASK_DEBUG", "0")
-
+    FLASK_DEBUG = os.getenv("FLASK_DEBUG", "1")
+    
     # NVIDIA NIM Configuration
-    # Security Pillar 3: zero hardcoded keys — load exclusively from the
-    # environment / .env (which is gitignored). BYOK keys supplied by the
-    # client per-request never touch this file.
     NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-    NVIDIA_API_KEYS = os.getenv("NVIDIA_API_KEYS", "").split(",")
+    NVIDIA_API_KEYS = os.getenv(
+        "NVIDIA_API_KEYS",
+        "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,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"
+    ).split(",")
     
     # Rate Limiting
     RATELIMIT_STORAGE_URL = os.getenv("RATELIMIT_STORAGE_URL", "memory://")

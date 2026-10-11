@@ -2,7 +2,6 @@
 CyberGPT Flask Application - Enterprise SOC Training & AI Mentorship Platform.
 API routes: chat, password audit, scenarios, evaluations, cheat sheets.
 CSRF disabled for JSON routes; in-memory SERVER_CHAT_MEMORY (last 10 msgs).
-Security: 6-pillar hardening via services/security.py
 """
 
 import os
@@ -10,7 +9,6 @@ import json
 import logging
 from collections import OrderedDict, deque
 from functools import wraps
-from typing import Dict
 
 from flask import Flask, request, jsonify, send_from_directory, render_template
 from flask_cors import CORS
@@ -18,17 +16,6 @@ from flask_cors import CORS
 from services.llm_service import llm_service, ModelTier
 from services.password_analyzer import password_analyzer
 from services.scenario_manager import scenario_manager
-from services.security import (
-    configure_security,
-    rate_limit,
-    validate_chat_input,
-    validate_analyzer_input,
-    wrap_user_evidence,
-    SecureErrorHandler,
-    FileUploadValidator,
-    MAX_CHAT_CHARS,
-    MAX_ANALYZER_CHARS,
-)
 
 # ----------------------------------------------------------------------------
 # Logging
@@ -51,11 +38,6 @@ app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024  # 2 MB body cap
 app.config["JSON_SORT_KEYS"] = False
 
 CORS(app, resources={r"/api/*": {"origins": "*"}})
-
-# ----------------------------------------------------------------------------
-# Security Configuration (6-pillar hardening)
-# ----------------------------------------------------------------------------
-configure_security(app)
 
 # ----------------------------------------------------------------------------
 # Server-side chat memory (in-memory, per-session, strict 10 msgs / 5 turns)
@@ -136,57 +118,25 @@ def static_files(filename):
 # ----------------------------------------------------------------------------
 @app.route("/api/health")
 def health():
-    from services.knowledge_engine import knowledge_engine
-
     return jsonify({
         "status": "ok",
         "platform": "CyberGPT",
         "subtitle": "Defensive Cyber Intelligence & SOC Operations Simulator",
-        "version": "2.1.0",
+        "version": "2.0.0",
         "llm_session": llm_service.get_token_stats(),
-        "knowledge_engine": knowledge_engine.stats(),
     })
 
 
 # ----------------------------------------------------------------------------
-# API: Chat (dual-mode intelligence with BYOK + failover)
+# API: Chat (LLM with tier + failover)
 # ----------------------------------------------------------------------------
-# BYOK keys travel per-request from the browser Settings modal (localStorage)
-# and are NEVER logged or persisted server-side.
-MAX_BYOK_KEY_CHARS = 200
-
-
-def _sanitize_byok(data: Dict) -> Dict[str, str]:
-    """Extract and bound user-supplied provider keys/models from the payload."""
-    byok: Dict[str, str] = {}
-    for field_name, key_name in (
-        ("openai_api_key", "openai_api_key"),
-        ("anthropic_api_key", "anthropic_api_key"),
-        ("openai_model", "openai_model"),
-        ("anthropic_model", "anthropic_model"),
-    ):
-        value = str(data.get(field_name, "") or "").strip()
-        if value:
-            byok[key_name] = value[:MAX_BYOK_KEY_CHARS]
-    return byok
-
-
 @app.route("/api/chat", methods=["POST"])
 @json_only
-@rate_limit
 def api_chat():
     data = request.get_json(force=True, silent=True) or {}
     message = str(data.get("message", "")).strip()
     tier_name = str(data.get("tier", "balanced")).strip()
     session_id = str(data.get("session_id", "default"))
-    mode = str(data.get("mode", "cyber")).strip().lower()
-    mode = "normal" if mode == "normal" else "cyber"
-
-    # Input validation
-    valid, result = validate_chat_input(message)
-    if not valid:
-        return jsonify({"success": False, "error": result}), 400
-    message = result  # sanitized message
 
     if not message:
         return jsonify({"success": False, "error": "Empty message"}), 400
@@ -197,12 +147,9 @@ def api_chat():
 
     tier = _resolve_tier(tier_name)
 
-    # BYOK (user-supplied OpenAI / Anthropic credentials), sanitized + bounded.
-    byok = _sanitize_byok(data)
-
     # Bridge to the async LLM service via the persistent
     # background event loop (safe from Flask request threads).
-    response = llm_service.chat_sync(history, tier, mode, byok)
+    response = llm_service.chat_sync(history, tier)
 
     # Push assistant reply into memory
     if response.success:
@@ -211,7 +158,6 @@ def api_chat():
     payload = response.to_dict()
     payload["session_id"] = session_id
     payload["history_length"] = len(_get_history(session_id))
-    payload["mode"] = mode
     return jsonify(payload)
 
 
@@ -244,7 +190,6 @@ def api_clear_history():
 # ----------------------------------------------------------------------------
 @app.route("/api/password/audit", methods=["POST"])
 @json_only
-@rate_limit
 def api_password_audit():
     data = request.get_json(force=True, silent=True) or {}
     password = str(data.get("password", ""))
@@ -264,7 +209,6 @@ def api_password_audit():
 
 @app.route("/api/password/entropy", methods=["POST"])
 @json_only
-@rate_limit
 def api_password_entropy():
     """Lightweight server-side entropy (used for verification; client computes instantly)."""
     data = request.get_json(force=True, silent=True) or {}
@@ -310,53 +254,6 @@ def api_scenario_evaluate(scenario_id):
         return jsonify({"success": False, "error": "selected_index (int) required"}), 400
     result = scenario_manager["evaluate"](scenario_id, selected)
     return jsonify({"success": result.pop("valid", False), "evaluation": result})
-
-
-# ----------------------------------------------------------------------------
-# API: Error Analyzer (security telemetry analysis)
-# ----------------------------------------------------------------------------
-@app.route("/api/error-analyzer", methods=["POST"])
-@json_only
-@rate_limit
-def api_error_analyzer():
-    data = request.get_json(force=True, silent=True) or {}
-    problem_type = str(data.get("problem_type", "Auto-detect")).strip()
-    environment = str(data.get("environment", "")).strip()
-    evidence = str(data.get("evidence", "")).strip()
-
-    # Input validation
-    valid, result = validate_analyzer_input(evidence)
-    if not valid:
-        return jsonify({"success": False, "error": result}), 400
-    evidence = result  # sanitized
-
-    if not evidence:
-        return jsonify({"success": False, "error": "Evidence required"}), 400
-
-    # Wrap evidence in delimiter for LLM processing
-    wrapped_evidence = wrap_user_evidence(evidence)
-
-    # For now, return a structured analysis response
-    # In a full implementation, this would call an LLM with the wrapped evidence
-    analysis = {
-        "problem_type": problem_type or "Auto-detect",
-        "environment": environment or "Unknown",
-        "evidence_received": True,
-        "evidence_length": len(evidence),
-        "note": "Security analysis would be performed here with wrapped evidence. The evidence is wrapped in delimiter tags to prevent injection.",
-        "redaction_applied": True,
-        "suggested_fixes": [
-            "Review telemetry for sensitive data before submission",
-            "Ensure delimiter tags are not present in raw evidence",
-            "Use the Cyber Error Analyzer tab for detailed analysis"
-        ],
-        "severity": "INFO"
-    }
-
-    return jsonify({
-        "success": True,
-        "report": analysis
-    })
 
 
 # ----------------------------------------------------------------------------
@@ -549,15 +446,9 @@ def server_error(e):
 
 
 def main():
-    """Entry point — strictly local runtime (http://127.0.0.1:5000).
-
-    Security Pillar 5: DEBUG defaults to False; Pillar 3: no secrets here.
-    The bind address is loopback-only so the simulator is never exposed on
-    LAN interfaces (classroom NAT safety).
-    """
     port = int(os.environ.get("PORT", 5000))
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    app.run(host="127.0.0.1", port=port, debug=debug, threaded=True)
+    app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)
 
 
 if __name__ == "__main__":

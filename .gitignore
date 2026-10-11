@@ -5,5 +5,3 @@ __pycache__/
 *.log
 logs/
 .vscode/
-node_modules/
-tests/out/

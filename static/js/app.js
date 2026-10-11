@@ -22,7 +22,6 @@
    ============================================================ */
 const state = {
   activeTab: "chat",
-  mode: "cyber",          // 'cyber' or 'normal' — determines intent routing
   tier: "balanced",
   sessionId: cryptoId(),
   cheatTier: "beginner",
@@ -48,8 +47,6 @@ const MODULE_LABELS = {
   password: "Password Hardening Audit",
   soc: "SOC Incident Drills",
   cheatsheets: "Security Cheat Sheets",
-  "study-planner": "Study Planner",
-  analyzer: "Cyber Error Analyzer",
 };
 
 function cryptoId() {
@@ -224,34 +221,11 @@ function plainMarked(text) {
 /**
  * Render markdown, then post-process every <pre><code> fence into a
  * labelled, syntax-highlighted block with a 1-click "Copy Code" button.
- * Output is sanitized with DOMPurify to prevent XSS.
  */
 function renderMarkdown(text) {
   const html = plainMarked(text);
-  
-  // Sanitize with DOMPurify if available
-  let sanitizedHtml = html;
-  if (window.DOMPurify && typeof window.DOMPurify.sanitize === "function") {
-    try {
-      sanitizedHtml = window.DOMPurify.sanitize(html, {
-        ALLOWED_TAGS: [
-          "p", "br", "h1", "h2", "h3", "h4", "h5", "h6",
-          "ul", "ol", "li", "strong", "em", "code", "pre",
-          "blockquote", "hr", "a", "table", "thead", "tbody",
-          "tr", "th", "td", "span", "div", "b", "i", "u"
-        ],
-        ALLOWED_ATTR: ["href", "class", "data-lang", "data-code-id", "target", "rel"],
-        ALLOW_DATA_ATTR: true
-      });
-    } catch (e) {
-      // Fallback to original if DOMPurify fails
-      sanitizedHtml = html;
-    }
-  }
-  
   const holder = document.createElement("div");
-  holder.innerHTML = sanitizedHtml;
-  // ... rest of function unchanged
+  holder.innerHTML = html;
 
   // Wrap bare tables so they scroll horizontally instead of overflowing.
   holder.querySelectorAll("table").forEach((table) => {
@@ -454,9 +428,6 @@ function initTabs() {
       const main = $("#app-main");
       if (main) main.scrollTop = 0;
 
-      // Refresh Lucide icons for the newly visible tab
-      refreshIcons();
-
       // Lazy-load the relevant module on first visit.
       if (target === "phishing") loadLab("phishing");
       if (target === "soc") loadLab("soc");
@@ -484,128 +455,6 @@ function initTierSwitcher() {
   });
 }
 
-function initModeSwitcher() {
-  const pills = $$(".mode-pill");
-  if (!pills.length) return;
-
-  pills.forEach((pill) => {
-    pill.addEventListener("click", () => {
-      const mode = pill.dataset.mode;
-      setMode(mode);
-    });
-  });
-}
-
-/**
- * Set the chat mode and update UI accordingly.
- * - Updates state.mode
- * - Updates active state on mode pills
- * - Updates the input placeholder text
- * - When called with 'normal', also triggers the action chip behavior
- */
-function setMode(newMode) {
-  state.mode = newMode;
-  const cyberBtn = document.querySelector('#mode-cyber') || document.querySelector('[data-mode="cyber"]');
-  const normalBtn = document.querySelector('#mode-normal') || document.querySelector('[data-mode="normal"]');
-  if (cyberBtn && normalBtn) {
-    if (newMode === 'cyber') {
-      cyberBtn.classList.add('active', 'bg-accent', 'text-white');
-      normalBtn.classList.remove('active', 'bg-accent', 'text-white');
-    } else {
-      normalBtn.classList.add('active', 'bg-accent', 'text-white');
-      cyberBtn.classList.remove('active', 'bg-accent', 'text-white');
-    }
-  }
-  const input = document.querySelector('#chat-input');
-  if (input) {
-    input.placeholder = newMode === 'cyber'
-      ? 'Ask the SOC copilot... (Enter to send, Shift+Enter for a new line)'
-      : 'Ask anything in Normal mode...';
-  }
-}
-
-/** Send a chat message with a specific mode (used by mode switcher). */
-function sendChatMessageWithMode(event, mode) {
-  event.preventDefault();
-  const c = window.__composer;
-  if (!c) return;
-
-  const input = c.input;
-  const message = input.value.trim();
-  if (!message) return;
-
-  // Double-click / double-submit protection.
-  if (c.sendBtn.disabled) return;
-
-  // Show typing indicator
-  showTypingIndicator();
-
-  // Check for multilingual small talk / greetings.
-  const multilingualReply = getMultilingualReply(message);
-  if (multilingualReply) {
-    appendMessage("user", message);
-    rememberTurn(message, "user");
-    if (state.messages.length === 1) placeComposer(true);
-    const hint = multilingualReply.modeHint
-      ? ` (tip: try ${multilingualReply.modeHint} mode for broader assistance)`
-      : "";
-    appendMessage("assistant", `${multilingualReply.reply}${hint}`);
-    removeTypingIndicator();
-    input.value = "";
-    autosizeComposer();
-    updateSendState();
-    return;
-  }
-
-  appendMessage("user", message);
-  rememberTurn(message, "user");
-  if (state.messages.length === 1) placeComposer(true);
-
-  // Clear input
-  input.value = "";
-  autosizeComposer();
-  setSendButtonLoading(true);
-
-  // Use the provided mode for this request
-  const requestMode = mode || state.mode;
-
-  fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message,
-      tier: state.tier,
-      mode: requestMode,
-      session_id: state.sessionId,
-      ...byokRequestBody(),
-    }),
-  })
-    .then((res) => res.json())
-    .then((data) => {
-      removeTypingIndicator();
-      if (data.success) {
-        if (data.session_id) state.sessionId = data.session_id;
-        updateSessionChip();
-        const meta = `Model: ${data.model_used} · ${String(data.tier || "").toUpperCase()} · ${data.tokens_used} tokens · ${data.latency_ms}ms`;
-        appendMessage("assistant", data.reply, meta, data.suggested_labs, data.action);
-      } else {
-        appendMessage("assistant", `**Inference service unavailable**\n\n${escapeHtml(data.error || "Unknown error")}`);
-        input.value = message; // Restore on error
-      }
-    })
-    .catch((err) => {
-      removeTypingIndicator();
-      appendMessage("assistant", `**Network error:** ${escapeHtml(err.message)}`);
-      input.value = message; // Restore on error
-    })
-    .finally(() => {
-      setSendButtonLoading(false);
-      autosizeComposer();
-      updateSendState();
-      if (!isMobile()) c.input.focus();
-    });
-}
-
 function updateChatMeta() {
   const meta = $("#chat-meta-text");
   const profile = $("#profile-tier");
@@ -615,134 +464,8 @@ function updateChatMeta() {
     pro: "Pro — 13-20 lines · architecture & IoCs",
   };
   const text = labels[state.tier] || labels.balanced;
-  if (meta) meta.textContent = `${text} · GLM-5.3 failover · CyBOK engine offline-ready`;
+  if (meta) meta.textContent = `${text} · NVIDIA NIM failover`;
   if (profile) profile.textContent = state.tier.charAt(0).toUpperCase() + state.tier.slice(1);
-}
-
-/* ============================================================
-   BYOK SETTINGS (Bring Your Own Key — OpenAI / Anthropic)
-   Keys live ONLY in this browser's localStorage under
-   "cybergpt_byok" and are attached per-request. They are
-   never rendered back into the DOM or logged anywhere.
-   ============================================================ */
-const BYOK_STORAGE_KEY = "cybergpt_byok";
-
-function loadByok() {
-  try {
-    const raw = localStorage.getItem(BYOK_STORAGE_KEY);
-    if (!raw) return { openai_api_key: "", anthropic_api_key: "", openai_model: "", anthropic_model: "" };
-    const parsed = JSON.parse(raw);
-    return {
-      openai_api_key: String(parsed.openai_api_key || ""),
-      anthropic_api_key: String(parsed.anthropic_api_key || ""),
-      openai_model: String(parsed.openai_model || ""),
-      anthropic_model: String(parsed.anthropic_model || ""),
-    };
-  } catch (e) {
-    return { openai_api_key: "", anthropic_api_key: "", openai_model: "", anthropic_model: "" };
-  }
-}
-
-function byokRequestBody() {
-  const byok = loadByok();
-  const body = {};
-  if (byok.openai_api_key) body.openai_api_key = byok.openai_api_key;
-  if (byok.anthropic_api_key) body.anthropic_api_key = byok.anthropic_api_key;
-  if (byok.openai_model) body.openai_model = byok.openai_model;
-  if (byok.anthropic_model) body.anthropic_model = byok.anthropic_model;
-  return body;
-}
-
-function initSettingsModal() {
-  const overlay = $("#settings-overlay");
-  const btn = $("#settings-btn");
-  const closeBtn = $("#settings-close");
-  const saveBtn = $("#settings-save");
-  const clearBtn = $("#settings-clear");
-  const status = $("#settings-status");
-  if (!overlay || !btn) return;
-
-  const fields = {
-    openai_api_key: $("#byok-openai-key"),
-    anthropic_api_key: $("#byok-anthropic-key"),
-    openai_model: $("#byok-openai-model"),
-    anthropic_model: $("#byok-anthropic-model"),
-  };
-
-  const setStatus = (msg, isError) => {
-    if (!status) return;
-    status.textContent = msg;
-    status.classList.toggle("is-error", Boolean(isError));
-  };
-
-  const fillFields = () => {
-    const byok = loadByok();
-    Object.keys(fields).forEach((name) => {
-      if (fields[name]) fields[name].value = byok[name] || "";
-    });
-  };
-
-  const open = () => {
-    fillFields();
-    setStatus("");
-    overlay.hidden = false;
-    btn.setAttribute("aria-expanded", "true");
-    const first = fields.openai_api_key;
-    if (first) first.focus();
-  };
-
-  const close = () => {
-    overlay.hidden = true;
-    btn.setAttribute("aria-expanded", "false");
-  };
-
-  btn.addEventListener("click", open);
-  if (closeBtn) closeBtn.addEventListener("click", close);
-  overlay.addEventListener("click", (e) => {
-    if (e.target === overlay) close();
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !overlay.hidden) close();
-  });
-
-  if (saveBtn) {
-    saveBtn.addEventListener("click", () => {
-      try {
-        const byok = {};
-        let supplied = 0;
-        Object.keys(fields).forEach((name) => {
-          const value = fields[name] ? fields[name].value.trim() : "";
-          if (value) {
-            byok[name] = value;
-            if (name.endsWith("_api_key")) supplied += 1;
-          }
-        });
-        localStorage.setItem(BYOK_STORAGE_KEY, JSON.stringify(byok));
-        setStatus(
-          supplied > 0
-            ? "Keys saved to this browser only. They will be used first on your next message."
-            : "Saved with no keys — the built-in NVIDIA NIM chain will be used.",
-          false
-        );
-        updateChatMeta();
-      } catch (e) {
-        setStatus("Could not save (localStorage unavailable).", true);
-      }
-    });
-  }
-
-  if (clearBtn) {
-    clearBtn.addEventListener("click", () => {
-      try {
-        localStorage.removeItem(BYOK_STORAGE_KEY);
-        fillFields();
-        setStatus("Keys cleared. Using the built-in model chain only.", false);
-        updateChatMeta();
-      } catch (e) {
-        setStatus("Could not clear (localStorage unavailable).", true);
-      }
-    });
-  }
 }
 
 /* ============================================================
@@ -842,35 +565,18 @@ function updateSendState() {
 }
 
 /** Swap the composer between the empty-state slot and the dock. */
-function placeComposer(docked) {
+function placeComposer(hasMessages) {
   const c = window.__composer;
   if (!c) return;
   const emptySlot = $("#empty-composer-slot");
   const dockSlot = $("#dock-slot");
   const shell = $(".chat-shell");
-  const chatEmpty = $("#chat-empty");
-  const composerDock = $("#composer-dock");
-  if (!emptySlot || !dockSlot || !chatEmpty || !composerDock) return;
+  if (!emptySlot || !dockSlot) return;
 
-  if (docked === true) {
-    // Transfer #chat-form into #dock-slot
-    if (c.node.parentElement !== dockSlot) dockSlot.appendChild(c.node);
-    // Hide hero greeting and show dock with explicit styles.
-    // NOTE: inline style values cannot carry "!important" — the CSSOM
-    // rejects such assignments entirely, which would leave the stale
-    // "display: none" in place and hide the composer. Use plain "flex".
-    chatEmpty.style.display = "none";
-    composerDock.style.display = "flex";
-    composerDock.style.visibility = "visible";
-  } else {
-    // Transfer #chat-form to #empty-composer-slot
-    if (c.node.parentElement !== emptySlot) emptySlot.appendChild(c.node);
-    // Show hero greeting and hide dock
-    chatEmpty.style.display = "flex";
-    composerDock.style.display = "none";
-    composerDock.style.visibility = "hidden";
-  }
-  if (shell) shell.classList.toggle("has-messages", docked === true);
+  const target = hasMessages ? dockSlot : emptySlot;
+  if (c.node.parentElement !== target) target.appendChild(c.node);
+
+  if (shell) shell.classList.toggle("has-messages", hasMessages);
 }
 
 function setSendButtonLoading(isLoading) {
@@ -895,7 +601,7 @@ function setSendButtonLoading(isLoading) {
 /* ============================================================
    CHAT — append messages + double-click-safe send
    ============================================================ */
-function appendMessage(role, content, metaInfo, suggestedLabs, action) {
+function appendMessage(role, content, metaInfo) {
   const log = $("#chat-log");
   if (!log) return null;
 
@@ -927,72 +633,6 @@ function appendMessage(role, content, metaInfo, suggestedLabs, action) {
       tag.textContent = metaInfo;
       body.appendChild(tag);
     }
-    // Render suggested lab chips
-    if (suggestedLabs && suggestedLabs.length > 0) {
-      const labChips = document.createElement("div");
-      labChips.className = "lab-chips";
-      labChips.style.cssText = "margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px;";
-      suggestedLabs.forEach((lab) => {
-        const chip = document.createElement("button");
-        chip.type = "button";
-        chip.className = "lab-chip";
-        chip.style.cssText = "display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; font-family: var(--mono); font-size: 10px; font-weight: 500; color: var(--cyan); background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: var(--r-pill); cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease;";
-        chip.innerHTML = `<i data-lucide="book-open" class="h-3 w-3"></i><span>${escapeHtml(lab.title)}</span>`;
-        chip.dataset.labId = lab.id;
-        chip.addEventListener("click", () => {
-          // Navigate to the appropriate lab tab
-          const labTab = $(`.nav-tab[data-tab="${lab.category.toLowerCase().replace('/', '-').replace(' ', '-')}"]`);
-          if (labTab) {
-            labTab.click();
-          } else if (lab.category === "Phishing") {
-            $('.nav-tab[data-tab="phishing"]').click();
-          } else if (lab.category.startsWith("SOC") || lab.category === "Endpoint Defense" || lab.category === "Active Directory" || lab.category === "Web AppSec" || lab.category === "Cloud Security") {
-            $('.nav-tab[data-tab="soc"]').click();
-          }
-          // Auto-load the specific lab after a short delay
-          setTimeout(() => {
-            const card = $(`#card-${lab.id}`);
-            if (card) {
-              card.scrollIntoView({ behavior: "smooth", block: "center" });
-              card.style.outline = "2px solid var(--accent)";
-              setTimeout(() => { card.style.outline = ""; }, 2000);
-            }
-          }, 300);
-        });
-        labChips.appendChild(chip);
-      });
-      body.appendChild(labChips);
-      refreshIcons(labChips);
-    }
-    // Render action chip (e.g., "Switch to Normal Chat & Ask Again")
-    if (action === "switch_mode") {
-      const actionChips = document.createElement("div");
-      actionChips.className = "action-chips";
-      actionChips.style.cssText = "margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px;";
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "action-chip";
-      chip.style.cssText = "display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; font-family: var(--sans); font-size: 12px; font-weight: 500; color: var(--ink); background: var(--accent); border: 1px solid var(--accent); border-radius: var(--r-pill); cursor: pointer; transition: background 0.15s ease, opacity 0.15s ease;";
-      chip.innerHTML = `<i data-lucide="message-square" class="h-3.5 w-3.5"></i><span>Switch to Normal Chat & Ask Again</span>`;
-      chip.addEventListener("click", () => {
-        const normalPill = $('.mode-pill[data-mode="normal"]');
-        if (normalPill) normalPill.click();
-        // Re-send the last user message
-        const lastUserMsg = state.messages[state.messages.length - 1];
-        if (lastUserMsg && lastUserMsg.role === "user") {
-          const c = window.__composer;
-          if (c) {
-            c.input.value = lastUserMsg.content;
-            autosizeComposer();
-            updateSendState();
-            c.node.requestSubmit();
-          }
-        }
-      });
-      actionChips.appendChild(chip);
-      body.appendChild(actionChips);
-      refreshIcons(actionChips);
-    }
   } else {
     body.textContent = content;
   }
@@ -1007,34 +647,6 @@ function appendMessage(role, content, metaInfo, suggestedLabs, action) {
   return wrapper;
 }
 
-/** Show the typing indicator in the chat log. */
-function showTypingIndicator() {
-  const log = $("#chat-log");
-  if (!log) return null;
-
-  // Remove any existing typing indicator
-  const existing = log.querySelector(".chat-typing");
-  if (existing) existing.remove();
-
-  const typing = document.createElement("div");
-  typing.className = "chat-typing";
-  typing.id = "chat-typing-indicator";
-  typing.innerHTML = `
-    <span class="dot"></span>
-    <span class="dot"></span>
-    <span class="dot"></span>
-  `;
-  log.appendChild(typing);
-  log.scrollTop = log.scrollHeight;
-  return typing;
-}
-
-/** Remove the typing indicator from the chat log. */
-function removeTypingIndicator() {
-  const existing = $("#chat-log .chat-typing");
-  if (existing) existing.remove();
-}
-
 async function sendChatMessage(event) {
   event.preventDefault();
   const c = window.__composer;
@@ -1046,9 +658,6 @@ async function sendChatMessage(event) {
 
   // Double-click / double-submit protection.
   if (c.sendBtn.disabled) return;
-
-  // Show typing indicator
-  showTypingIndicator();
 
   // Optional telemetry artifact is attached as a labelled, bounded block.
   let payload = message;
@@ -1064,41 +673,12 @@ async function sendChatMessage(event) {
     }
   }
 
-  // Check for multilingual small talk / greetings.
-  // In Cyber mode, give a short friendly reply + hint to switch to Normal mode.
-  const multilingualReply = getMultilingualReply(message);
-  if (multilingualReply) {
-    appendMessage("user", message);
-    rememberTurn(message, "user");
-    if (state.messages.length === 1) placeComposer(true);
-    const modeName = state.tier.charAt(0).toUpperCase() + state.tier.slice(1);
-    const hint = multilingualReply.modeHint
-      ? ` (tip: try ${multilingualReply.modeHint} mode for broader assistance)`
-      : "";
-    appendMessage(
-      "assistant",
-      `${multilingualReply.reply}${hint}`
-    );
-    // Do not send to LLM; skip the rest of the send flow.
-    removeTypingIndicator();
-    input.value = "";
-    state.attachment = null;
-    const fileInput = c.node.querySelector("#telemetry-file");
-    if (fileInput) fileInput.value = "";
-    const chip = c.node.querySelector("#composer-attachment");
-    if (chip) chip.hidden = true;
-    autosizeComposer();
-    updateSendState();
-    return;
-  }
-
   appendMessage("user", message);
-  rememberTurn(message, "user");
+  rememberTurn(message);
   // First message: the empty-state hero retires and the composer
   // migrates into the sticky dock.
   if (state.messages.length === 1) placeComposer(true);
 
-  // Clear input and attachment state NOW (after dispatch decision, before await)
   input.value = "";
   state.attachment = null;
   const fileInput = c.node.querySelector("#telemetry-file");
@@ -1116,14 +696,10 @@ async function sendChatMessage(event) {
       body: JSON.stringify({
         message: payload,
         tier: state.tier,
-        mode: state.mode || "cyber",
         session_id: state.sessionId,
-        ...byokRequestBody(),
       }),
     });
     const data = await res.json();
-
-    removeTypingIndicator();
 
     if (data.success) {
       if (data.session_id) state.sessionId = data.session_id;
@@ -1131,71 +707,20 @@ async function sendChatMessage(event) {
       const meta =
         `Model: ${data.model_used} · ${String(data.tier || "").toUpperCase()} · ` +
         `${data.tokens_used} tokens · ${data.latency_ms}ms`;
-      appendMessage("assistant", data.reply, meta, data.suggested_labs, data.action);
+      appendMessage("assistant", data.reply, meta);
     } else {
       appendMessage(
         "assistant",
-        `**Inference unavailable**\n\n${escapeHtml(data.error || "Unknown error")}\n\nTry a CyBOK concept (e.g. "what is zero trust") — I answer those fully offline.`
+        `⚠️ **Inference service unavailable**\n\n${escapeHtml(data.error || "Unknown error")}\n\nThe NVIDIA NIM failover chain was exhausted. Verify the account has live models provisioned.`
       );
-      // Restore input on error (user can retry)
-      input.value = message;
     }
   } catch (err) {
-    removeTypingIndicator();
-    appendMessage("assistant", `**Network error:** ${escapeHtml(err.message)}`);
-    // Restore input on error (user can retry)
-    input.value = message;
+    appendMessage("assistant", `⚠️ **Network error:** ${escapeHtml(err.message)}`);
   } finally {
     // Always re-enable the send button — even on failure.
     setSendButtonLoading(false);
-    autosizeComposer();
-    updateSendState();
     if (!isMobile()) c.input.focus();
   }
-}
-
-/* ============================================================
-   MULTILINGUAL SMALL TALK / GREETINGS
-   ============================================================ */
-function getMultilingualReply(message) {
-  const lower = message.toLowerCase().trim();
-
-  // English greetings
-  const engGreetings = ["hello", "hi", "hey", "good morning", "good afternoon", "good evening"];
-  // Urdu (Roman Urdu) greetings
-  const urGreetings = ["salaam", "assalam o alikum", "wa alikum assalam", "kya haal hai"];
-  // Hinglish greetings
-  const hiGreetings = ["hello", "namaste", "kya conditions hain", "achha ho"];
-  // Punjabi greetings
-  const paGreetings = ["Sat Sri Akal", "Satnam", "kya haal chakk hai", "tuani kovan"];
-
-  // Check each language set
-  const isEnglish = engGreetings.some(g => lower.includes(g));
-  const isUrdu = urGreetings.some(g => lower.includes(g));
-  const isHinglish = hiGreetings.some(g => lower.includes(g));
-  const isPunjabi = paGreetings.some(g => lower.includes(g));
-
-  if (isEnglish || isHinglish) {
-    return {
-      reply: "Hello! I'm CyberGPT in Cyber mode — I can help with defensive security questions, scenario labs, or password audits. Switch to Normal mode for broader AI assistance.",
-      modeHint: "switch to Normal"
-    };
-  }
-  if (isUrdu) {
-    return {
-      reply: "Salaam! Main CyberGPT hoon — Cyber mode mein main apko defensive security, scenario labs ya password audit madad kar sakti hoon. Normal mode mein broaden AI assistance payen.",
-      modeHint: "Normal mode par jayen"
-    };
-  }
-  if (isPunjabi) {
-    return {
-      reply: "Sat Sri Akal! Main CyberGPT hoon — Cyber mode mein main defensive security, scenario labs ya password audit di madad kar sakti hoon. Normal mode te broadly AI assistance payen.",
-      modeHint: "Normal mode vich jao"
-    };
-  }
-
-  // Default: no small talk reply (return null so normal processing continues)
-  return null;
 }
 
 function autosizeComposer() {
@@ -1211,14 +736,13 @@ function autosizeComposer() {
 /* ============================================================
    RECENT OPERATIONS (sidebar history, client-side transcript)
    ============================================================ */
-function rememberTurn(text, role) {
+function rememberTurn(text) {
   const clean = String(text).replace(/\s+/g, " ").trim();
   if (!clean) return;
   state.messages.push({
     id: ++state.turnCount,
-    role: role || "user",
-    content: clean,
     preview: clean.length > 46 ? `${clean.slice(0, 46)}…` : clean,
+    full: clean,
     at: new Date(),
   });
   if (state.messages.length > 40) state.messages.shift();
@@ -1254,35 +778,6 @@ function renderRecentList() {
   refreshIcons(list);
 }
 
-function loadRecentChat(messages) {
-  const log = $("#chat-log");
-  if (!log) return;
-
-  // Clear existing messages
-  log.innerHTML = "";
-
-  // Render each message
-  messages.forEach((m) => {
-    const role = m.role || "user";
-    const content = m.content || m.full || "";
-    appendMessage(role, content);
-  });
-
-  // Show dock and hide empty state using placeComposer
-  placeComposer(true);
-
-  // Reset state
-  state.messages = messages.map((m) => ({
-    id: m.id || ++state.turnCount,
-    role: m.role || "user",
-    content: m.content || m.full || "",
-    preview: (m.content || m.full || "").length > 46 ? `${(m.content || m.full || "").slice(0, 46)}…` : (m.content || m.full || "").trim(),
-    at: m.at || new Date(),
-  }));
-  state.turnCount = Math.max(...state.messages.map((m) => m.id || 0)) || 0;
-  renderRecentList();
-}
-
 function initRecentList() {
   renderRecentList();
   const list = $("#recent-list");
@@ -1290,15 +785,6 @@ function initRecentList() {
   list.addEventListener("click", (e) => {
     const btn = e.target.closest(".recent-item");
     if (!btn) return;
-    const recentId = parseInt(btn.dataset.recent, 10);
-
-    // Load from localStorage
-    const recent = JSON.parse(localStorage.getItem("cyber_recent_chats") || "[]");
-    const chat = recent.find((c) => c.id === recentId || c.title.includes(String(recentId)));
-    if (chat) {
-      loadRecentChat(chat.messages);
-    }
-
     // Jump back to the chat module — the transcript is live above.
     const chatTab = $('.nav-tab[data-tab="chat"]');
     if (chatTab) chatTab.click();
@@ -1352,7 +838,7 @@ function initFlushButton() {
     } catch (err) {
       appendMessage(
         "assistant",
-        `**Could not reach the session service:** ${escapeHtml(err.message)}\nThe transcript was still cleared locally.`
+        `⚠️ **Could not reach the session service:** ${escapeHtml(err.message)}\nThe transcript was still cleared locally.`
       );
     } finally {
       if (span) span.textContent = original;
@@ -1364,57 +850,13 @@ function initFlushButton() {
 /* ============================================================
    NEW CHAT (Ctrl+K / +)
    ============================================================ */
-function saveChatToRecent() {
-  // Save current chat to localStorage if it has messages
-  if (!state.messages.length) return;
+function initNewChatButton() {
+  const btn = $("#new-chat-btn");
+  if (!btn) return;
 
-  const firstPrompt = state.messages.length > 0 ? state.messages[0].content : "";
-  const title = firstPrompt.length > 30 ? `${firstPrompt.slice(0, 30)}…` : firstPrompt;
-  const chatData = {
-    title,
-    timestamp: new Date().toISOString(),
-    messages: state.messages.map((m) => ({
-      id: m.id,
-      role: m.role,
-      content: m.content,
-      preview: m.preview,
-      at: m.at,
-    })),
-  };
-
-  const recent = JSON.parse(localStorage.getItem("cyber_recent_chats") || "[]");
-  // Remove if already present (to update order)
-  const idx = recent.findIndex(
-    (c) => c.title === chatData.title && c.timestamp === chatData.timestamp
-  );
-  if (idx >= 0) recent.splice(idx, 1);
-  recent.unshift(chatData);
-  // Keep only last 10
-  const limited = recent.slice(0, 10);
-  localStorage.setItem("cyber_recent_chats", JSON.stringify(limited));
-}
-
-function startNewChat() {
-    // Save current chat to recent before clearing
-    saveChatToRecent();
-
-    // Clear chat log and reset state
-    const log = $("#chat-log");
-    if (log) log.innerHTML = "";
-
-    // Show empty state hero
-    const empty = $("#chat-empty");
-    if (empty) empty.style.display = "flex";
-
-    // Reset composer placement using placeComposer (handles dock/empty-slot swap)
-    placeComposer(false);
-
-    // Reset state
-    state.messages = [];
-    state.turnCount = 0;
-    renderRecentList();
-
-    // Reset composer
+  const startNewChat = () => {
+    const chatTab = $('.nav-tab[data-tab="chat"]');
+    if (chatTab && state.activeTab !== "chat") chatTab.click();
     const c = window.__composer;
     if (c) {
       c.input.value = "";
@@ -1422,15 +864,9 @@ function startNewChat() {
       updateSendState();
       c.input.focus();
     }
-
-    // Mobile drawer cleanup
     const shell = $(".app-shell");
     if (shell && isMobile()) shell.classList.remove("sidebar-open");
-  }
-
-function initNewChatButton() {
-  const btn = $("#new-chat-btn");
-  if (!btn) return;
+  };
 
   btn.addEventListener("click", startNewChat);
 
@@ -2034,144 +1470,12 @@ function renderCheatSheet(sheet) {
 /* ============================================================
    BOOTSTRAP
    ============================================================ */
-function initErrorAnalyzer() {
-  const analyzerHeader = document.querySelector("#tab-analyzer .lab-head h2");
-  if (!analyzerHeader) return;
-
-  const analyzeBtn = $("#analyze-btn");
-  const analyzerResult = $("#analyzer-result");
-  const evidenceTextarea = $("#analyzer-evidence");
-  const environmentSelect = $("#analyzer-environment");
-  const problemTypeSelect = $("#analyzer-problem-type");
-
-  function showLoading(show) {
-    if (show) {
-      analyzeBtn.setAttribute("aria-busy", "true");
-      analyzeBtn.textContent = "Analyzing…";
-      analyzerResult.innerHTML = `<div class="result-placeholder"><i data-lucide="loader-2" class="h-5 w-5" style="color:var(--cyan)"></i><p>Analyzing telemetry…</p></div>`;
-      refreshIcons(analyzerResult);
-    } else {
-      analyzeBtn.removeAttribute("aria-busy");
-      analyzeBtn.textContent = "Analyze Error";
-      analyzerResult.innerHTML = "";
-    }
-  }
-
-  function renderResult(report) {
-    if (!report || typeof report !== "object") {
-      analyzerResult.innerHTML = `<div class="result-placeholder is-error"><i data-lucide="alert-octagon" class="h-5 w-5"></i><p>Analysis failed: invalid response</p></div>`;
-      refreshIcons(analyzerResult);
-      return;
-    }
-
-    const { problem_type, environment, evidence, analysis, redaction_notes, suggested_fixes, severity } = report || {};
-
-    let html = "";
-    if (severity) {
-      html += `<div class="severity-badge">${escapeHtml(severity)}</div>`;
-    }
-    html += `<p><strong>Problem Type:</strong> ${problem_type || "N/A"}</p>`;
-    html += `<p><strong>Environment:</strong> ${environment || "N/A"}</p>`;
-
-    if (analysis && analysis.trim()) {
-      html += `<p><strong>Analysis:</strong></p><pre class="telemetry-block">${escapeHtml(analysis)}</pre>`;
-    }
-
-    if (redaction_notes && redaction_notes.trim()) {
-      html += `<p><strong>Redaction Notes:</strong> ${escapeHtml(redaction_notes)}</p>`;
-    }
-
-    if (suggested_fixes && suggested_fixes.length) {
-      html += `<p><strong>Suggested Fixes:</strong><ul>${suggested_fixes.map(f => `<li>${escapeHtml(f)}</li>`).join("")}</ul></p>`;
-    }
-
-    analyzerResult.innerHTML = html;
-    refreshIcons(analyzerResult);
-  }
-
-  function redactSensitiveData(text) {
-    if (!text) return text;
-    let result = text;
-
-    result = result.replace(/[a-zA-Z0-9]{32,}/g, "[REDACTED]");
-    result = result.replace(/Bearer [a-zA-Z0-9\-._~+\/=]*/g, "[REDACTED]");
-    result = result.replace(/AKIA[LRSY0-9]{16}/g, "[REDACTED]");
-    result = result.replace(/(?:password|pass|pwd)\s*[:=]\s*["'][^"']{4,32}["']/gi, "[REDACTED PASSWORD]");
-    result = result.replace(/[a-zA-Z0-9]{24,}==(?:\s|$)/g, "[REDACTED]");
-
-    return result;
-  }
-
-  function detectProblemType(evidence) {
-    const patterns = {
-      "Terminal/CLI error": /^\s*\$\s|command not found|usage:|bash:|zsh:/i,
-      "Python/application code error": /Traceback \(most recent call last\)|[A-Z][a-z]+Error|Exception|line \d+, in /i,
-      "Web application security finding": /XSS|SQL injection|XSRF|CSRF|XSS|X-XSS-Protection/i,
-      "HTTP/API error": /HTTP\/\d\.\d|status[^\S ]*[45]\d\d|unauthorized|forbidden/i,
-      "Network/DNS/TLS": /DNS\s+(error|failure|timeout)|NXDOMAIN|certificate|TLS|SSL|handshake|ETIMEDOUT|unreachable/i,
-      "Linux system error": /permission denied|EACCES|segfault|systemd|journalctl|failed to start|mount/i,
-      "Windows/Active Directory event": /4624|4625|4672|4768|4769|4776|4688|Event ID/i,
-      "SIEM/EDR alert": /alert|detection|sigma|rule name|Severity|EDR|Sentinel|Splunk/i,
-      "Suspicious email/phishing evidence": /Return-Path|Authentication-Results|spf=|dkim=|dmarc=|Received\s+from/i,
-      "Cloud/IAM": /PutBucketPolicy|Principal\s+\*|s3:GetObject|IAM.*policy|cloudtrail/i,
-      "Database error": /SQLSTATE|ORA-\d+|psql|mysql|mariadb|constraint violation|deadlock/i,
-      "Docker/deployment": /docker|container|kubectl|pod|image build|compose/i,
-      "Suspicious payload (analysis only)": /base64|eval|IEX|powershell.*-enc|cmd\.exe/i,
-    };
-
-    for (const [type, pattern] of Object.entries(patterns)) {
-      if (pattern.test(evidence)) return type;
-    }
-    return "Auto-detect";
-  }
-
-  analyzeBtn.addEventListener("click", async () => {
-    const evidence = evidenceTextarea.value || "";
-    const environment = environmentSelect.value || "";
-    const problemType = problemTypeSelect.value || "Auto-detect";
-
-    if (!evidence.trim()) {
-      analyzerResult.innerHTML = `<div class="result-placeholder"><i data-lucide="alert-triangle" class="h-5 w-5" style="color:var(--warning)"></i><p>Enter some evidence to analyze.</p></div>`;
-      refreshIcons(analyzerResult);
-      return;
-    }
-
-    const redactedEvidence = redactSensitiveData(evidence);
-
-    showLoading(true);
-    analyzerResult.innerHTML = "";
-
-    try {
-      const res = await fetch("/api/error-analyzer", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ problem_type, environment, evidence: redactedEvidence }),
-      });
-      const data = await res.json();
-
-      if (data.success && data.report) {
-        renderResult(data.report);
-      } else {
-        analyzerResult.innerHTML = `<div class="result-placeholder is-error"><i data-lucide="alert-octagon" class="h-5 w-5"></i><p>Analysis failed: ${data.error || "Unknown error"}</p></div>`;
-        refreshIcons(analyzerResult);
-      }
-    } catch (err) {
-      analyzerResult.innerHTML = `<div class="result-placeholder is-error"><i data-lucide="alert-octagon" class="h-5 w-5"></i><p>Network error: ${escapeHtml(err.message)}</p></div>`;
-      refreshIcons(analyzerResult);
-    } finally {
-      showLoading(false);
-    }
-  });
-}
-
 document.addEventListener("DOMContentLoaded", () => {
   initTabs();
   initTierSwitcher();
   initSidebar();
   initComposer();
-  initModeSwitcher();
   initQuickPills();
-  initSettingsModal();
   initCodeCopyDelegation($("#chat-log"));
   initCodeCopyDelegation(document);
   initPasswordAudit();
@@ -2192,456 +1496,6 @@ document.addEventListener("DOMContentLoaded", () => {
   initCheatTiers();
   loadCheatSheet(state.cheatTier);
 
-  // Initialize Study Planner
-  initStudyPlanner();
-
-  // Initialize Cyber Error Analyzer
-  initErrorAnalyzer();
-
   // Initialize Lucide icons across the static shell.
   refreshIcons();
 });
-
-/* ============================================================
-   STUDY PLANNER MODULE
-   ============================================================ */
-function initStudyPlanner() {
-  // Load planner state from localStorage
-  const VERSION = 1;
-  const KEY = "cybergpt-planner";
-
-  function loadPlan() {
-    try {
-      const serialized = localStorage.getItem(KEY);
-      if (!serialized) return { version: VERSION, tasks: [] };
-      const parsed = JSON.parse(serialized);
-      if (parsed.version !== VERSION) {
-        // Schema version mismatch — wipe and start fresh
-        localStorage.removeItem(KEY);
-        return { version: VERSION, tasks: [] };
-      }
-      return parsed;
-    } catch (e) {
-      // Corrupted storage — start fresh
-      localStorage.removeItem(KEY);
-      return { version: VERSION, tasks: [] };
-    }
-  }
-
-  function savePlan(plan) {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(plan));
-    } catch (e) {
-      console.error("[init:planner] failed to save:", e);
-    }
-  }
-
-  // Only initialize if the study planner tab exists in the DOM
-  const plannerHeader = document.querySelector("#tab-study-planner .lab-head h2");
-  if (!plannerHeader) return; // planner tab not present
-
-  state.studyPlanner = loadPlan();
-
-  // DOM elements — may be null if planner tab not currently active
-  const plannerDateInput = $("#planner-date");
-  const plannerTargetInput = $("#planner-target");
-  const plannerNoteTextarea = $("#planner-note");
-  const plannerTasksContainer = $("#planner-tasks");
-  const plannerStreakSpan = $("#planner-streak");
-  const plannerXPSpan = $("#planner-xp");
-
-  // ... rest of the function
-
-  // Today/Tomorrow/This week helpers
-  function getToday() {
-    const d = new Date();
-    return d;
-  }
-  function getTomorrow() {
-    const d = new Date();
-    d.setDate(d.getDate() + 1);
-    return d;
-  }
-  function getWeekStart() {
-    const d = new Date();
-    const day = d.getDay();
-    const diff = d.getDate() - day + (day === 0 ? -6 : 1); // adjust to Monday
-    d.setDate(diff);
-    return d;
-  }
-  function formatDate(d) {
-    return d.toISOString().split("T")[0];
-  }
-  function isSameDay(a, b) {
-    return a.getFullYear() === b.getFullYear() &&
-           a.getMonth() === b.getMonth() &&
-           a.getDate() === b.getDate();
-  }
-
-  // Render the planner UI
-  function renderPlanner() {
-    const view = getActiveView();
-    const today = getToday();
-    const weekStart = getWeekStart();
-
-    let tasks = [];
-    if (view === "today") {
-      tasks = state.studyPlanner.tasks.filter(t => isSameDay(new Date(t.date), today));
-    } else if (view === "tomorrow") {
-      const tomorrow = getTomorrow();
-      tasks = state.studyPlanner.tasks.filter(t => isSameDay(new Date(t.date), tomorrow));
-    } else if (view === "this-week") {
-      tasks = state.studyPlanner.tasks.filter(t => {
-        const d = new Date(t.date);
-        return d >= weekStart && d < new Date(weekStart.getTime() + 7 * 24 * 60 * 60 * 1000);
-      });
-    }
-
-    // Sort by date ascending, then by created order
-    tasks.sort((a, b) => new Date(a.date) - new Date(b.date) || (a.id - b.id));
-
-    plannerTasksContainer.innerHTML = "";
-
-    if (tasks.length === 0) {
-      plannerTasksContainer.innerHTML = `
-        <div class="result-placeholder">
-          <i data-lucide="calendar-x" class="h-5 w-5" style="color:var(--faint)"></i>
-          <p>No tasks for this view. Add a new task using the form above.</p>
-        </div>`;
-      refreshIcons(plannerTasksContainer);
-      updateSummary();
-      return;
-    }
-
-    tasks.forEach((task, ti) => {
-      const completedLabs = task.labs.filter(l => l.status === "done").length;
-      const progress = `${completedLabs}/${task.labs.length}`;
-
-      const html = `
-        <div class="task-card" data-task-id="${task.id}">
-          <div class="task-header">
-            <span class="task-title">${escapeHtml(task.title)}</span>
-            <span class="task-date">${formatDate(new Date(task.date))}</span>
-          </div>
-          <div class="task-labs">
-            ${task.labs.map((lab, li) => {
-              const isDone = lab.status === "done";
-              return `
-                <div class="lab-item ${isDone ? "done" : ""}">
-                  <span class="lab-name">${escapeHtml(lab.name)}</span>
-                  <span class="lab-progress ${isDone ? "completed" : ""}">${progress}</span>
-                </div>
-              `;
-            }).join("")}
-          </div>
-          <button class="task-delete" data-task-id="${task.id}">Delete</button>
-        </div>`;
-      plannerTasksContainer.insertAdjacentHTML("beforeend", html);
-    });
-
-    refreshIcons(plannerTasksContainer);
-    updateSummary();
-  }
-
-  function getActiveView() {
-    const active = document.querySelector(".planner-tab.active");
-    return active ? active.dataset.view : "today";
-  }
-
-  // Update streak and XP summary
-  function updateSummary() {
-    const today = getToday();
-    const weekStart = getWeekStart();
-    const weekEnd = new Date(weekStart.getTime() + 7 * 24 * 60 * 60 * 1000);
-
-    let streak = 0;
-    let totalXP = 0;
-    let completedThisWeek = 0;
-
-    // Calculate streak: check consecutive days with completed tasks
-    const seenDates = new Set();
-    for (let i = 0; i < 30; i++) {
-      const checkDate = new Date();
-      checkDate.setDate(checkDate.getDate() - i);
-      const dateKey = formatDate(checkDate);
-      if (seenDates.has(dateKey)) continue;
-      seenDates.add(dateKey);
-
-      const dayTasks = state.studyPlanner.tasks.filter(t =>
-        t.status === "done" && isSameDay(new Date(t.date), checkDate)
-      );
-      if (dayTasks.length > 0) {
-        streak++;
-        totalXP += dayTasks.reduce((sum, t) => sum + t.xp, 0);
-      } else {
-        break; // streak broken
-      }
-    }
-    // Actually, let's do a simpler streak: count consecutive days from today going back
-    streak = 0;
-    for (let i = 0; i < 30; i++) {
-      const checkDate = new Date();
-      checkDate.setDate(checkDate.getDate() - i);
-      const hasTask = state.studyPlanner.tasks.some(t =>
-        isSameDay(new Date(t.date), checkDate) && t.status === "done"
-      );
-      if (hasTask) {
-        streak++;
-      } else {
-        // If there's a gap, stop - but allow gap if user did something earlier
-        // Simple version: just count from today backward until first missing day
-        break;
-      }
-    }
-    // Better streak: find longest streak ending today
-    let maxStreak = 0;
-    let currentStreak = 0;
-    for (let i = 0; i < 30; i++) {
-      const checkDate = new Date();
-      checkDate.setDate(checkDate.getDate() - i);
-      const hasTask = state.studyPlanner.tasks.some(t =>
-        isSameDay(new Date(t.date), checkDate) && t.status === "done"
-      );
-      if (hasTask) {
-        currentStreak++;
-      } else {
-        if (currentStreak > maxStreak) maxStreak = currentStreak;
-        currentStreak = 0; // reset on first gap
-        // Actually, we want streak ending today, so we should break after first gap from today
-        // Let's redo this logic
-      }
-    }
-    // Simpler: streak is number of consecutive days ending today with completed labs
-    streak = 0;
-    for (let i = 0; i < 30; i++) {
-      const checkDate = new Date();
-      checkDate.setDate(checkDate.getDate() - i);
-      const hasTask = state.studyPlanner.tasks.some(t =>
-        isSameDay(new Date(t.date), checkDate) && t.status === "done"
-      );
-      if (hasTask) {
-        streak++;
-      } else {
-        break;
-      }
-    }
-
-    // XP: sum of all completed labs' XP
-    totalXP = state.studyPlanner.tasks
-      .filter(t => t.status === "done")
-      .reduce((sum, t) => sum + t.xp, 0);
-
-    // Weekly summary: labs completed this week
-    completedThisWeek = state.studyPlanner.tasks
-      .filter(t => t.status === "done" && new Date(t.date) >= weekStart && new Date(t.date) < weekEnd)
-      .reduce((sum, t) => sum + t.labs.length, 0);
-
-    if (plannerStreakSpan) plannerStreakSpan.textContent = streak;
-    if (plannerXPSpan) plannerXPSpan.textContent = totalXP;
-  }
-
-  // Add a new task
-  function addTask() {
-    const date = plannerDateInput.value || formatDate(getToday());
-    const target = parseInt(plannerTargetInput.value) || 3;
-    const note = plannerNoteTextarea.value || "";
-
-    // Get selected labs from catalog or auto-assign
-    let labs = [];
-    if (window.__plannerSelectedLabs && window.__plannerSelectedLabs.length > 0) {
-      labs = window.__plannerSelectedLabs.map(id => ({
-        id,
-        name: getLabName(id),
-        status: "todo",
-        questionsCompleted: 0,
-        totalQuestions: 0,
-        xp: 0,
-      }));
-    } else {
-      // Auto-assign by difficulty
-      const difficulty = (target >= 8) ? "Advanced" : (target >= 4 ? "Intermediate" : "Beginner");
-      const allLabs = Object.values(LAB_REPOSITORY).filter(l => l.difficulty === difficulty);
-      // Shuffle and pick up to target
-      const shuffled = [...allLabs].sort(() => Math.random() - 0.5);
-      labs = shuffled.slice(0, target).map(lab => ({
-        id: lab.id,
-        name: lab.title,
-        status: "todo",
-        questionsCompleted: 0,
-        totalQuestions: lab.questions ? lab.questions.length : 0,
-        xp: 10, // base XP per lab
-      }));
-    }
-
-    const task = {
-      id: `planner-${Date.now()}`,
-      date,
-      title: `Study session - ${formatDate(new Date(date))}`,
-      note,
-      labs,
-      created: new Date().toISOString(),
-    };
-
-    state.studyPlanner.tasks.push(task);
-    savePlan(state.studyPlanner);
-    renderPlanner();
-    updateRecentList(); // refresh recent ops count
-
-    // Reset form
-    plannerTargetInput.value = "3";
-    plannerNoteTextarea.value = "";
-    window.__plannerSelectedLabs = [];
-
-    return task;
-  }
-
-  // Get lab name by ID
-  function getLabName(id) {
-    const lab = LAB_REPOSITORY[id];
-    return lab ? lab.title : id;
-  }
-
-  // Complete a lab (called when user finishes all questions)
-  function completeLab(taskId, labId) {
-    const task = state.studyPlanner.tasks.find(t => t.id === taskId);
-    if (!task) return;
-
-    const lab = task.labels.find(l => l.id === labId);
-    if (!lab) {
-      // Add lab to task
-      const labData = LAB_REPOSITORY[labId];
-      if (labData) {
-        task.labs.push({
-          id: labData.id,
-          name: labData.title,
-          status: "done",
-          questionsCompleted: labData.questions ? labData.questions.length : 0,
-          totalQuestions: labData.questions ? labData.questions.length : 0,
-          xp: 10,
-        });
-      }
-    } else {
-      lab.status = "done";
-      lab.questionsCompleted = lab.totalQuestions;
-      // Calculate XP based on correct answers (simplified: 10 per lab)
-      lab.xp = 10;
-    }
-
-    savePlan(state.studyPlanner);
-    renderPlanner();
-    updateSummary();
-
-    // Show progress feedback
-    // TODO: could emit a toast or update sidebar
-  }
-
-  // Delete a task
-  function deleteTask(taskId) {
-    state.studyPlanner.tasks = state.studyPlanner.tasks.filter(t => t.id !== taskId);
-    savePlan(state.studyPlanner);
-    renderPlanner();
-    updateSummary();
-  }
-
-  // Export plan as JSON
-  function exportPlan() {
-    const data = JSON.stringify(state.studyPlanner, null, 2);
-    const blob = new Blob([data], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `cybergpt-planner-export-${formatDate(new Date())}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  // Import plan from JSON
-  function importPlan(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const parsed = JSON.parse(e.target.result);
-        if (parsed.version !== undefined) {
-          // Validate schema version
-          state.studyPlanner = parsed;
-          savePlan(state.studyPlanner);
-          renderPlanner();
-          updateSummary();
-          // Reset the file input
-          event.target.value = "";
-        } else {
-          alert("Invalid plan file: missing schema version.");
-        }
-      } catch (err) {
-        alert("Failed to import plan: " + err.message);
-      }
-    };
-    reader.readAsText(file);
-  }
-
-  // Event listeners - only attach if elements exist
-  const addTaskBtn = document.querySelector("#planner-add-task");
-  if (addTaskBtn) addTaskBtn.addEventListener("click", addTask);
-
-  const exportBtn = document.querySelector("#planner-export");
-  if (exportBtn) exportBtn.addEventListener("click", exportPlan);
-
-  const importBtn = document.querySelector("#planner-import");
-  if (importBtn) {
-    // importBtn.click(); // focus - removed to avoid error
-
-    // Import file input
-    const plannerImportInput = document.createElement("input");
-    plannerImportInput.type = "file";
-    plannerImportInput.id = "planner-import-input";
-    plannerImportInput.accept = ".json";
-    plannerImportInput.style.display = "none";
-    document.body.appendChild(plannerImportInput);
-    importBtn.addEventListener("click", () => {
-      plannerImportInput.click();
-    });
-    plannerImportInput.addEventListener("change", importPlan);
-  }
-
-  // Tab switching
-  document.querySelectorAll(".planner-tab").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      document.querySelectorAll(".planner-tab").forEach((t) => t.classList.remove("active"));
-      tab.classList.add("active");
-      renderPlanner();
-    });
-  });
-
-  // Task delete buttons
-  if (plannerTasksContainer) {
-    plannerTasksContainer.addEventListener("click", (e) => {
-      const deleteBtn = e.target.closest(".task-delete");
-      if (deleteBtn) {
-        const taskId = deleteBtn.dataset.taskId;
-        deleteTask(taskId);
-      }
-    });
-  }
-
-  // Auto-assign by difficulty
-  const autoAssignBtn = document.querySelector("#planner-autoassign");
-  if (autoAssignBtn) {
-    autoAssignBtn.addEventListener("click", () => {
-      const target = parseInt(plannerTargetInput.value) || 3;
-      const allLabs = Object.values(LAB_REPOSITORY);
-      const difficultyMap = { "Beginner": 0, "Intermediate": 1, "Advanced": 2 };
-      const sorted = [...allLabs].sort((a, b) => difficultyMap[a.difficulty] - difficultyMap[b.difficulty]);
-      const selected = sorted.slice(0, target);
-      window.__plannerSelectedLabs = selected.map(l => l.id);
-      // Re-run addTask which will use the selected labs
-      addTask();
-    });
-  }
-
-  // Initial render
-  renderPlanner();
-  updateSummary();
-}

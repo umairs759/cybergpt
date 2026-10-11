@@ -10,101 +10,7 @@ identifiers are dummy values. Nothing in this repository is real data.
 """
 
 from dataclasses import dataclass, field, asdict
-import json
-import os
-import re
 from typing import Dict, List, Optional, Any
-
-
-_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
-_DATA_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "data", "labs")
-
-_CATEGORIES: List[str] = [
-    "Phishing",
-    "SOC/Endpoint",
-    "Active Directory",
-    "Web AppSec",
-    "Cloud/IAM",
-    "Password/Auth",
-    "Network/DNS-TLS",
-    "Logs/SIEM",
-]
-
-_DIFFICULTIES: List[str] = ["Beginner", "Intermediate", "Advanced"]
-
-_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,64}$")
-
-
-class LabValidationError(ValueError):
-    pass
-
-
-def _validate_lab(raw: Dict[str, Any], source: str) -> Dict[str, Any]:
-    """Structural validation of one lab definition (fail loud at import)."""
-    try:
-        lab_id = raw["id"]
-        title = raw["title"]
-        category = raw["category"]
-        difficulty = raw["difficulty"]
-        questions = raw["questions"]
-    except KeyError as e:
-        raise LabValidationError(f"{source}: missing field {e}") from None
-
-    if not _ID_RE.match(str(lab_id)):
-        raise LabValidationError(f"{source}: invalid id {lab_id!r}")
-    if category not in _CATEGORIES:
-        raise LabValidationError(f"{source}: unknown category {category!r}")
-    if difficulty not in _DIFFICULTIES:
-        raise LabValidationError(f"{source}: unknown difficulty {difficulty!r}")
-    if not isinstance(questions, list) or not questions:
-        raise LabValidationError(f"{source}: questions must be a non-empty list")
-
-    for qi, q in enumerate(questions):
-        for field in ("question", "options", "correct_index", "hints", "explanation"):
-            if field not in q:
-                raise LabValidationError(f"{source}: question {qi} missing {field!r}")
-        if not isinstance(q["options"], list) or len(q["options"]) < 2:
-            raise LabValidationError(f"{source}: question {qi} needs >= 2 options")
-        if not isinstance(q["correct_index"], int) or not (
-            0 <= q["correct_index"] < len(q["options"])
-        ):
-            raise LabValidationError(f"{source}: question {qi} correct_index out of range")
-        if not isinstance(q["hints"], list):
-            raise LabValidationError(f"{source}: question {qi} hints must be a list")
-
-    minutes = raw.get("estimated_minutes", 10)
-    if not isinstance(minutes, int) or not (1 <= minutes <= 180):
-        raise LabValidationError(f"{source}: estimated_minutes out of range")
-    return raw
-
-
-def _load_repository() -> Dict[str, Dict[str, Any]]:
-    """Load and validate every data/labs/*.json file into an id-keyed dict."""
-    repo: Dict[str, Dict[str, Any]] = {}
-    if not os.path.isdir(_DATA_DIR):
-        raise RuntimeError(f"Lab data directory missing: {_DATA_DIR}")
-
-    for filename in sorted(os.listdir(_DATA_DIR)):
-        if not filename.endswith(".json"):
-            continue
-        path = os.path.join(_DATA_DIR, filename)
-        with open(path, "r", encoding="utf-8") as fh:
-            try:
-                payload = json.load(fh)
-            except json.JSONDecodeError as e:
-                raise RuntimeError(f"{filename}: invalid JSON ({e})") from None
-        labs = payload.get("labs", payload if isinstance(payload, list) else [])
-        for raw in labs:
-            lab = _validate_lab(raw, filename)
-            if lab["id"] in repo:
-                raise RuntimeError(f"{filename}: duplicate lab id {lab['id']!r}")
-            repo[lab["id"]] = lab
-    if not repo:
-        raise RuntimeError("Lab catalog is empty — no labs loaded from data/labs/")
-    return repo
-
-
-LAB_REPOSITORY: Dict[str, Dict[str, Any]] = _load_repository()
 
 
 @dataclass
@@ -139,9 +45,6 @@ ENDPOINT = "Endpoint Defense"
 ACTIVE_DIRECTORY = "Active Directory"
 WEB_APPSEC = "Web AppSec"
 CLOUD = "Cloud Security"
-PASSWORD = "Password/Auth"
-NETWORK = "Network/DNS-TLS"
-SIEM = "Logs/SIEM"
 
 SCENARIO_REPOSITORY: Dict[str, Scenario] = {
     # ============================ PHISHING LAB ============================
@@ -650,17 +553,7 @@ SCENARIO_REPOSITORY: Dict[str, Scenario] = {
     ),
 }
 
-CATEGORIES = [
-    "All Labs",
-    PHISHING,
-    ENDPOINT,
-    ACTIVE_DIRECTORY,
-    WEB_APPSEC,
-    CLOUD,
-    PASSWORD,
-    NETWORK,
-    SIEM,
-]
+CATEGORIES = ["All Labs", PHISHING, ENDPOINT, ACTIVE_DIRECTORY, WEB_APPSEC, CLOUD]
 
 
 def get_all_scenarios() -> List[Dict[str, Any]]:
